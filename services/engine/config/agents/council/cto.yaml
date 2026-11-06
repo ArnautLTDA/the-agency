@@ -1,7 +1,7 @@
 agent_id: cto
 name: Chief Technology Officer
 role: Chief Technology Officer
-model: gemini/gemini-2.5-pro
+model: gemini/gemini-3.8-pro
 temperature: 0.1
 allowed_tools:
   - read_file

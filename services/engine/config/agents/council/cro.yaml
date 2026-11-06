@@ -1,7 +1,7 @@
 agent_id: cro
 name: Chief Revenue Officer
 role: Chief Revenue Officer
-model: gemini/gemini-2.5-pro
+model: gemini/gemini-3.8-pro
 temperature: 0.3
 allowed_tools:
   - read_file

@@ -160,16 +160,35 @@ class AgentRunner:
         for iteration in range(1, self.max_iterations + 1):
             logger.info(f"Run {self.run_id} | Iteration {iteration}/{self.max_iterations}")
 
-            # Call LLM via LiteLLM
-            try:
-                response = await acompletion(
-                    model=self.profile.model,
-                    messages=messages,
-                    tools=tool_schemas if tool_schemas else None,
-                    temperature=self.profile.temperature,
-                    api_key=settings.GEMINI_API_KEY,
-                )
-            except Exception as exc:
+            # Call LLM via LiteLLM with transient error retries (503 / 429)
+            max_llm_retries = 3
+            response = None
+            last_exc = None
+            for attempt in range(1, max_llm_retries + 1):
+                try:
+                    response = await acompletion(
+                        model=self.profile.model,
+                        messages=messages,
+                        tools=tool_schemas if tool_schemas else None,
+                        temperature=self.profile.temperature,
+                        api_key=os.environ.get("GEMINI_API_KEY") or settings.GEMINI_API_KEY,
+                    )
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    err_str = str(exc)
+                    is_transient = "503" in err_str or "high demand" in err_str.lower() or "429" in err_str
+                    if is_transient and attempt < max_llm_retries:
+                        wait_sec = attempt * 3
+                        logger.warning(
+                            f"Transient LLM error on run {self.run_id} ({exc}). Retrying attempt {attempt}/{max_llm_retries} in {wait_sec}s..."
+                        )
+                        await asyncio.sleep(wait_sec)
+                    else:
+                        break
+
+            if response is None:
+                exc = last_exc or Exception("Failed to receive LLM response.")
                 logger.error(f"LLM API Error on run {self.run_id}: {exc}")
                 await self._emit_event("error", {"iteration": iteration, "error": str(exc)})
                 async with self.session_factory() as session:
