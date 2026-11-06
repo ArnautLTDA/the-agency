@@ -17,7 +17,7 @@ def test_tc009_load_valid_agent_profile():
     """TC-009: Loads valid agent YAML profiles correctly into memory."""
     profile = load_agent_profile("homologation_agent")
     assert profile.agent_id == "homologation_agent"
-    assert profile.model == "gemini/gemini-2.5-flash"
+    assert profile.model == "gemini/gemini-3.5-flash"
     assert "write_file" in profile.allowed_tools
     assert "patch_file" in profile.allowed_tools
 
