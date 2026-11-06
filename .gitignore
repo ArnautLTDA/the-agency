@@ -1,0 +1,42 @@
+# Environments and Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/*
+!logs/.gitkeep
+*.log
+
+# Workspaces and client artifacts
+workspaces/clients/
+workspaces/tmp/
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS and Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
