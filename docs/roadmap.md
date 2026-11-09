@@ -78,9 +78,9 @@ Criação dos sentidos e braços operacionais do sistema com o mundo exterior (e
   * Transcrição instantânea de mensagens de voz (.ogg) recebidas de clientes via Groq Whisper (`whisper-large-v3`) em <500ms.
   * Bloqueio silencioso de prompt injection, jailbreaks e comandos maliciosos, com registro em `security_incidents` e alerta direto para o Telegram de João.
 * **1.3 Scraper & OSINT MCP Server (`:3009`):**
-  * Microsserviço independente com browser headless para extração do Google Maps e web a custo zero (R$ 0,00).
-  * Expõe **Servidor MCP via SSE** com ferramentas: `scrape_google_maps` e `enrich_lead_profile`.
-  * Validação ativa prévia de existência de WhatsApp via chamada ao `whatsapp-gateway` (`:3005`).
+  * Baseado no motor open-source **`google-maps-scraper-kit`** com automação leve via Chrome DevTools Protocol (CDP) e grid search a custo zero (R$ 0,00).
+  * Expõe **Servidor MCP via SSE** com ferramentas: `scrape_google_maps` e `enrich_lead_profile` (redes sociais, Instagram e e-mails verificados).
+  * Validação ativa prévia de existência de WhatsApp via chamada ao `whatsapp-gateway` (`:3005`) e deduplicação no banco de dados.
 * **1.4 Payment Gateway & MCP Server (Banco Inter API `:3006`):**
   * Microsserviço dedicado isolado em Python FastAPI na porta `:3006` com mTLS nativo (certificados `.crt` e `.key` em pasta restrita).
   * Expõe **Servidor MCP via SSE** com ferramentas: `create_pix_charge`, `get_pix_status` e `simulate_pix_payment`.

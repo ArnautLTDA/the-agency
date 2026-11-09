@@ -180,27 +180,73 @@ O microsserviço `guardrail-gateway` opera na porta `:3007` como um gateway de s
 
 ## 6. Especificação do Scraper & OSINT Gateway Microservice (`:3009`)
 
-### 6.1 Princípios de Coleta Ética e Custo Zero
-* **Stack:** Python FastAPI na porta `:3009` executando automação de browser headless local (Playwright) e parsers BeautifulSoup.
-* **Custo Zero de Capital (R$ 0,00):** Sem dependência de assinaturas de dados pagas no início.
-* **Confinamento de Recursos:** O microsserviço roda de forma isolada para que o consumo de memória do browser headless nunca interfira na estabilidade do motor de agentes.
-* **Privacidade:** Coleta estritamente dados públicos institucionais de pessoas jurídicas (Google Maps, sites oficiais, Instagram comercial).
+### 6.1 Motor Base: Google Maps Scraper Kit (Open-Source)
+O microsserviço `osint-scraper-gateway` adota como fundação técnica o projeto open-source **`google-maps-scraper-kit`** (`Mahanaicoach/google-maps-scraper-kit`), encapsulando-o e expondo suas capacidades como um **Servidor MCP via SSE na porta `:3009`**.
+
+#### Vantagens Arquiteturais do `google-maps-scraper-kit`:
+* **Custo Zero Real (R$ 0,00):** Elimina a necessidade de assinaturas de APIs pagas de terceiros (como SerpApi, Outscraper ou Apify).
+* **Execução Leve via CDP (Chrome DevTools Protocol):** Controla instâncias de Chrome/Chromium headless diretamente via protocolo CDP com a biblioteca padrão do Python, dispensando overhead de frameworks pesados de automação no core de busca.
+* **Superação do Limite do Google Maps (Grid Search):** O Google Maps normalmente trava pesquisas em ~120 estabelecimentos por busca; o motor implementa varredura em grade geográfica (`--grid`) e centramento por coordenadas (`lat`/`lon` via OpenStreetMap Nominatim), permitindo mapear bairros e cidades inteiras.
+* **Blindagem Antibot & Evasão:**
+  * Substitui a assinatura de `HeadlessChrome` por `Chrome` legítimo no User-Agent.
+  * Gerenciamento de backoff inteligente e pausas em caso de detecção de páginas de tráfego incomum.
+  * Suporte nativo a proxies rotativos (HTTP/SOCKS5) se a operação escalar.
+* **Enriquecimento Profundo Automático (Web Crawler Concorrente):**
+  * Rastreamento simultâneo (16 workers assíncronos) das páginas de início, "contato" e "sobre" dos sites das empresas.
+  * Extração de redes sociais oficiais: Instagram comercial, Facebook, LinkedIn, TikTok, YouTube e X/Twitter.
+  * Captura de e-mails com checagem de integridade de domínio via consultas DNS ao Google Public DNS (`dns.google`).
+  * Detecção de tecnologias e pixels de rastreamento instalados nos sites.
 
 ### 6.2 Endpoints REST & Interface MCP do `osint-scraper-gateway` (:3009)
 
+O serviço roda com `SCRAPER_PORT=3009`, persistindo suas tarefas de raspagem no banco local `.engine/data/jobs.db` e expondo o canal de comunicação MCP:
+
 | Método / Interface | Endpoint | Parâmetros de Entrada | Descrição & Resposta |
 | :--- | :--- | :--- | :--- |
-| `GET` (REST) | `/api/v1/scraper/jobs/{job_id}` | Path param `job_id` | Consulta o status de uma tarefa assíncrona de mineração (`running`, `completed`, `failed`). |
-| `GET` (MCP SSE) | `/sse` | Conexão SSE | Canal de comunicação MCP JSON-RPC 2.0 para execução de pesquisas e enriquecimento de leads. |
+| `POST` (REST) | `/api/v1/jobs` | `{"name": "...", "keywords": [...], "lang": "pt-BR", "max_time": 300, "lat": "...", "lon": "..."}` | Criação de job assíncrono de mineração no motor do scraper kit. Retorna `id` do job. |
+| `GET` (REST) | `/api/v1/jobs/{id}` | Path param `id` | Consulta o status da tarefa (`Status`: `"pending"`, `"running"`, `"ok"`, `"failed"`). |
+| `GET` (REST) | `/api/v1/jobs/{id}/download` | Path param `id` (query: `format=json\|csv`) | Download dos dados consolidados da raspagem contendo até 36 campos brutos. |
+| `GET` (MCP SSE) | `/sse` | Conexão SSE | Canal de comunicação MCP JSON-RPC 2.0 para os agentes da esteira invocarem as ferramentas. |
 
 #### Catálogo de Ferramentas MCP Expostas (`tools/list`):
-* **`scrape_google_maps`**: Executa varredura headless no Google Maps, extraindo Nome, Endereço, Categoria, Telefone e Website, consultando o `whatsapp-gateway` para descartar telefones fixos ou sem WhatsApp antes de retornar. Parâmetros: `query` (string, ex: "Clínicas odontológicas"), `city` (string), `limit` (número, padrão 20).
-* **`enrich_lead_profile`**: Realiza varredura no website e redes sociais do estabelecimento para coletar Instagram comercial, WhatsApp adicional e portfólio de serviços. Parâmetros: `lead_id` (inteiro), `website` (string), `business_name` (string).
+* **`scrape_google_maps`**: Orquestra a execução completa do scraper kit para um nicho e cidade, filtra e valida leads e entrega dados prontos para abordagem comercial.
+  * **Parâmetros (`inputSchema`):**
+    * `query` (string, obrigatório): Termo de busca (ex: `"Clínicas odontológicas"` ou `"Pizzarias"`).
+    * `city` (string, obrigatório): Cidade e estado de foco para geocodificação de coordenadas (ex: `"Curitiba, PR"`).
+    * `depth` (número, opcional, padrão 5): Profundidade de paginação (1 ≈ 20 locais, 5 ≈ 100 locais).
+    * `extract_socials` (boolean, opcional, padrão true): Ativa rastreamento de redes sociais (Instagram, Facebook, LinkedIn).
+    * `extract_emails` (boolean, opcional, padrão true): Ativa varredura de e-mails nos sites dos estabelecimentos.
+* **`enrich_lead_profile`**: Dispara o crawler de site do kit para uma empresa já existente para atualizar e-mails, redes sociais e tecnologias instaladas.
+  * **Parâmetros (`inputSchema`):**
+    * `lead_id` (inteiro, obrigatório): Identificador do lead no banco `pipeline.db`.
+    * `website` (string, obrigatório): URL do site do cliente a ser inspecionado.
+    * `business_name` (string, obrigatório): Nome do estabelecimento.
 
-### 6.3 Pipeline de Validação Ativa de Contatos
-1. Os telefones extraídos pelo `osint-scraper-gateway` são normalizados no padrão internacional E.164.
-2. O scraper consulta diretamente o `whatsapp-gateway` via MCP ou HTTP (`POST http://localhost:3005/api/v1/contacts/check-whatsapp`).
-3. Telefones fixos convencionais ou sem conta ativa no WhatsApp são descartados da esteira antes de gerar leads inoperantes.
+### 6.3 Pipeline de Integração, Qualificação & WhatsApp Verification
+A grande força de unir o `google-maps-scraper-kit` ao ecossistema da software house é o pipeline de qualificação prévia antes da abordagem:
+
+```mermaid
+flowchart TD
+    AGENT["Agente Minerador (:8000)"] -->|1. Invocação MCP scrape_google_maps| SCRAPER_SVC["osint-scraper-gateway (:3009)"]
+    SCRAPER_SVC -->|2. Job no Engine CDP| GMAPS["Google Maps"]
+    GMAPS -->|3. Fichas de Empresas Extraídas| SCRAPER_SVC
+    SCRAPER_SVC -->|4. Crawl Concorrente de Sites| SITES["Websites das Empresas"]
+    SITES -->|5. Instagram, E-mails & Redes| SCRAPER_SVC
+    
+    SCRAPER_SVC -->|6. Normalização Telefônica E.164| NORMALIZER["Sanitizador de Telefones"]
+    NORMALIZER -->|7. Chamada MCP check_whatsapp_numbers| WPP_SVC["whatsapp-gateway (:3005)"]
+    WPP_SVC -->|8. Resultado onWhatsApp (Ativo/Inativo)| SCRAPER_SVC
+    
+    SCRAPER_SVC -->|9. Deduplicação contra SQLite| DB[(pipeline.db - Tabela leads)]
+    DB -->|10. Descarta Existentes e Inativos| SCRAPER_SVC
+    SCRAPER_SVC -->|11. Retorna Leads Qualificados com WhatsApp Ativo| AGENT
+```
+
+1. **Extração & Enriquecimento:** O scraper kit localiza os estabelecimentos no Google Maps e acessa seus respectivos websites para puxar links de Instagram comercial e e-mails institucionais.
+2. **Normalização Internacional E.164:** O telefone comercial do Google Maps é padronizado (ex: `+5541999999999`).
+3. **Filtro Ativo no WhatsApp (`onWhatsApp`):** O microsserviço `:3009` consulta a ferramenta MCP `check_whatsapp_numbers` no `whatsapp-gateway` (`:3005`). Se o número for telefone fixo sem WhatsApp ou linha desativada, o lead é descartado imediatamente.
+4. **Deduplicação Soberana:** O sistema valida contra a tabela `leads` no SQLite central. Se a empresa já tiver sido prospectada ou estiver no funil, é ignorada.
+5. **Ingestão no Funil Comercial:** Apenas estabelecimentos validados (com WhatsApp ativo confirmado, nicho identificado e dados de redes sociais) são cadastrados como `NOVO` e disponibilizados para o agente de abordagem comercial.
 
 ---
 

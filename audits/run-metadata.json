@@ -1,0 +1,28 @@
+{
+  "run_id": "run-20261106-phase0-engine",
+  "repo": "the-agency",
+  "target": "/home/joao/projetos/the agency",
+  "source_ref": "master",
+  "profile": "standard",
+  "scope_paths": [
+    "services/engine",
+    "workspaces",
+    "docs",
+    "config"
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "selected_companion_files": [
+    "AI-AND-LLM.md",
+    "WEB-PROTOCOL-AND-AUTH.md",
+    "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md",
+    "CLOUD-AND-DEPLOYMENT.md",
+    "PROTOCOLS-RPC-AND-MESSAGING.md",
+    "DATA-ISOLATION-AND-LIFECYCLE.md"
+  ],
+  "prior_run_paths": [],
+  "shared_file_owners": {
+    "parent": "antigravity-auditor"
+  },
+  "run_status": "complete"
+}

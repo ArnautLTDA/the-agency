@@ -4,6 +4,7 @@ import os
 import shutil
 import signal
 import subprocess
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,7 +40,13 @@ class BaseSandboxDriver(ABC):
         self.max_buffer_bytes = max_buffer_bytes
 
     @abstractmethod
-    def execute(self, command: str, cwd: Path, timeout: int = 60) -> CommandResult:
+    def execute(
+        self,
+        command: str,
+        cwd: Path,
+        timeout: int = 60,
+        run_id: str | None = None,
+    ) -> CommandResult:
         """Executes the given command in cwd with timeout."""
         pass
 
@@ -47,7 +54,13 @@ class BaseSandboxDriver(ABC):
 class SubprocessSandboxDriver(BaseSandboxDriver):
     """Fallback local driver with sanitized environment, restricted cwd and process isolation."""
 
-    def execute(self, command: str, cwd: Path, timeout: int = 60) -> CommandResult:
+    def execute(
+        self,
+        command: str,
+        cwd: Path,
+        timeout: int = 60,
+        run_id: str | None = None,
+    ) -> CommandResult:
         sanitized_env = dict(os.environ)
         for sensitive_key in ["GEMINI_API_KEY", "GROQ_API_KEY", "ANTHROPIC_API_KEY"]:
             sanitized_env.pop(sensitive_key, None)
@@ -138,11 +151,26 @@ class DockerSandboxDriver(BaseSandboxDriver):
         except Exception:
             return False
 
-    def execute(self, command: str, cwd: Path, timeout: int = 60) -> CommandResult:
+    def execute(
+        self,
+        command: str,
+        cwd: Path,
+        timeout: int = 60,
+        run_id: str | None = None,
+    ) -> CommandResult:
+        container_suffix = run_id[:8] if run_id else "sand"
+        container_name = f"agency-{container_suffix}-{int(time.time() * 1000)}"
+
+        # SEC-004: Hardened container execution with network isolation and dropped caps
         docker_cmd = [
             "docker",
             "run",
             "--rm",
+            f"--name={container_name}",
+            "--network=none",
+            "--cap-drop=ALL",
+            "--read-only",
+            "--tmpfs=/tmp:rw,noexec,nosuid,size=64m",
             f"--memory={self.memory_limit}",
             f"--cpus={self.cpus_limit}",
             f"--pids-limit={self.pids_limit}",
@@ -175,6 +203,23 @@ class DockerSandboxDriver(BaseSandboxDriver):
                 timed_out=False,
             )
         except subprocess.TimeoutExpired:
+            # SEC-018: Explicit kill and cleanup of zombie container on timeout
+            try:
+                subprocess.run(
+                    ["docker", "kill", container_name],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+                subprocess.run(
+                    ["docker", "rm", "-f", container_name],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+            except Exception:
+                pass
+
             if proc is not None:
                 try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -194,6 +239,17 @@ class DockerSandboxDriver(BaseSandboxDriver):
                 timed_out=True,
             )
         except Exception as exc:
+            # Cleanup container on unexpected failure
+            try:
+                subprocess.run(
+                    ["docker", "rm", "-f", container_name],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+            except Exception:
+                pass
+
             return CommandResult(
                 stdout="",
                 stderr=f"Docker execution failure: {exc}",
@@ -203,9 +259,19 @@ class DockerSandboxDriver(BaseSandboxDriver):
 
 
 def get_sandbox_driver() -> BaseSandboxDriver:
-    """Returns the primary DockerSandboxDriver if docker is active, or Subprocess fallback."""
+    """Returns the primary DockerSandboxDriver, or enforces fail-closed security (SEC-002)."""
     docker_driver = DockerSandboxDriver()
     if docker_driver.is_available():
         return docker_driver
-    logger.warning("Docker daemon is not available; falling back to SubprocessSandboxDriver.")
-    return SubprocessSandboxDriver()
+
+    settings = get_settings()
+    if settings.ALLOW_LOCAL_SUBPROCESS_DEV:
+        logger.warning(
+            "SECURITY ALERT: Docker daemon unavailable. Falling back to SubprocessSandboxDriver because ALLOW_LOCAL_SUBPROCESS_DEV=True."
+        )
+        return SubprocessSandboxDriver()
+
+    raise RuntimeError(
+        "Docker daemon is unreachable. Terminal execution blocked (Fail-Closed). "
+        "Set ALLOW_LOCAL_SUBPROCESS_DEV=true in .env only for local offline debugging."
+    )

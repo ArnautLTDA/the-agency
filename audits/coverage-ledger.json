@@ -1,0 +1,1226 @@
+[
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Fapi%2Frouter.py%23sec-001-api-unauthenticated-access::services%2Fengine%2Fsrc%2Frunner%2Fagent_runner.py%23AgentRunner.run::services%2Fengine::ATTACK-CLASSES.md%23Missing",
+    "canonical_refs": {
+      "surface": "services/engine/src/api/router.py#sec-001-api-unauthenticated-access",
+      "boundary": "services/engine/src/runner/agent_runner.py#AgentRunner.run",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Missing"
+    },
+    "surface": "Missing Authentication and Access Control Across All Public API Endpoints",
+    "boundary": "LiteLLM invoked and paid API tokens consumed without caller authentication.",
+    "subsystem": "Engine Core",
+    "attack_class": "Missing",
+    "starting_paths": [
+      "services/engine/src/api/router.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Missing",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/api/router.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/api/router.py"
+        ],
+        "invariant": "All execution, telemetry and streaming routes must require a valid API key or Bearer token header.",
+        "method": "source",
+        "result": "FastAPI router routes in services/engine/src/api/router.py declare no Security or Depends(auth) dependencies.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-001-api-unauthenticated-access"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Fapi%2Frouter.py%23sec-002-asyncio-task-gc-drop::services%2Fengine%2Fsrc%2Fapi%2Frouter.py%23dispatch_agent_run::services%2Fengine::ATTACK-CLASSES.md%23Python",
+    "canonical_refs": {
+      "surface": "services/engine/src/api/router.py#sec-002-asyncio-task-gc-drop",
+      "boundary": "services/engine/src/api/router.py#dispatch_agent_run",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Python"
+    },
+    "surface": "Python Asyncio Fire-and-Forget Task Garbage Collection Dropping Running Agents",
+    "boundary": "Function returns response model while task is referenced only weakly by event loop.",
+    "subsystem": "Engine Core",
+    "attack_class": "Python",
+    "starting_paths": [
+      "services/engine/src/api/router.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Python",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/api/router.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/api/router.py"
+        ],
+        "invariant": "Background tasks must be retained in an in-memory set and removed only on completion callback.",
+        "method": "source",
+        "result": "router.py calls asyncio.create_task() without retaining the returned Task reference.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-002-asyncio-task-gc-drop"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Fapi%2Frouter.py%23sec-014-profile-directory-traversal::services%2Fengine%2Fsrc%2Frunner%2Fagent_runner.py%23load_agent_profile::services%2Fengine::ATTACK-CLASSES.md%23Directory",
+    "canonical_refs": {
+      "surface": "services/engine/src/api/router.py#sec-014-profile-directory-traversal",
+      "boundary": "services/engine/src/runner/agent_runner.py#load_agent_profile",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Directory"
+    },
+    "surface": "Directory Traversal in Agent Profile Loader",
+    "boundary": "search_files combines config_path with f'{agent_id}.yaml'.",
+    "subsystem": "Engine Core",
+    "attack_class": "Directory",
+    "starting_paths": [
+      "services/engine/src/api/router.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Directory",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/api/router.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/api/router.py"
+        ],
+        "invariant": "Validate agent_id with regex pattern ^[a-z0-9_-]+$ before path construction.",
+        "method": "source",
+        "result": "load_agent_profile in agent_runner.py uses config_path / f'{agent_id}.yaml' without sanitization.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-014-profile-directory-traversal"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Fapi%2Frouter.py%23sec-015-queue-rate-limit-missing::services%2Fengine%2Fsrc%2Fservices%2Fpool.py%23AgentPool.submit::services%2Fengine::ATTACK-CLASSES.md%23Lack",
+    "canonical_refs": {
+      "surface": "services/engine/src/api/router.py#sec-015-queue-rate-limit-missing",
+      "boundary": "services/engine/src/services/pool.py#AgentPool.submit",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Lack"
+    },
+    "surface": "Lack of Rate Limiting and In-Memory Queue DOS Vulnerability",
+    "boundary": "self._queued_count incremented infinitely without max limit.",
+    "subsystem": "Engine Core",
+    "attack_class": "Lack",
+    "starting_paths": [
+      "services/engine/src/api/router.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Lack",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/api/router.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/api/router.py"
+        ],
+        "invariant": "Enforce maximum queue ceiling and reject additional tasks with HTTP 503.",
+        "method": "source",
+        "result": "AgentPool.submit() appends tasks to queue without checking maximum queued threshold.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-015-queue-rate-limit-missing"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Fapi%2Frouter.py%23sec-021-trace-correlation-id-missing::services%2Fengine%2Fsrc%2Fapi%2Frouter.py%23dispatch_agent_run::services%2Fengine::ATTACK-CLASSES.md%23Missing",
+    "canonical_refs": {
+      "surface": "services/engine/src/api/router.py#sec-021-trace-correlation-id-missing",
+      "boundary": "services/engine/src/api/router.py#dispatch_agent_run",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Missing"
+    },
+    "surface": "Missing Distributed Correlation / Request ID Header in API and Logs",
+    "boundary": "Response sent without X-Request-ID header.",
+    "subsystem": "Engine Core",
+    "attack_class": "Missing",
+    "starting_paths": [
+      "services/engine/src/api/router.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Missing",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/api/router.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/api/router.py"
+        ],
+        "invariant": "Generate or propagate X-Request-ID across all requests and agent run records.",
+        "method": "source",
+        "result": "router.py and main.py lack Request-ID middleware.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-021-trace-correlation-id-missing"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Fapi%2Frouter.py%23sec-023-workspace-path-injection::services%2Fengine%2Fsrc%2Ftools%2Fimplementations.py%23resolve_safe_path::services%2Fengine::ATTACK-CLASSES.md%23Arbitrary",
+    "canonical_refs": {
+      "surface": "services/engine/src/api/router.py#sec-023-workspace-path-injection",
+      "boundary": "services/engine/src/tools/implementations.py#resolve_safe_path",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Arbitrary"
+    },
+    "surface": "Arbitrary Workspace Path Injection via Unvalidated API Parameter",
+    "boundary": "target.relative_to(resolved_ws) passes for any file on host when workspace is /.",
+    "subsystem": "Engine Core",
+    "attack_class": "Arbitrary",
+    "starting_paths": [
+      "services/engine/src/api/router.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Arbitrary",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/api/router.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/api/router.py"
+        ],
+        "invariant": "workspace_dir must be strictly validated as a slug relative to workspaces/clients/.",
+        "method": "source",
+        "result": "router.py passes unvalidated request.workspace_dir to AgentRunner.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-023-workspace-path-injection"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Fapi%2Fsse.py%23sec-018-sse-framing-newline-injection::services%2Fengine%2Fsrc%2Fapi%2Fsse.py%23SSEEvent.encode::services%2Fengine::ATTACK-CLASSES.md%23SSE",
+    "canonical_refs": {
+      "surface": "services/engine/src/api/sse.py#sec-018-sse-framing-newline-injection",
+      "boundary": "services/engine/src/api/sse.py#SSEEvent.encode",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#SSE"
+    },
+    "surface": "SSE Protocol Framing Injection via Newlines in Event Type",
+    "boundary": "f'event: {self.event}\\n' formatted without newline stripping.",
+    "subsystem": "Engine Core",
+    "attack_class": "SSE",
+    "starting_paths": [
+      "services/engine/src/api/sse.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#SSE",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/api/sse.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/api/sse.py"
+        ],
+        "invariant": "Sanitize event strings to guarantee no raw newline characters are injected into headers.",
+        "method": "source",
+        "result": "sse.py interpolates self.event into SSE frame without stripping newline characters.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-018-sse-framing-newline-injection"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Fconfig.py%23sec-nv-001-production-reverse-proxy-rate-limit::services%2Fengine%2Fsrc%2Fmain.py%23start::services%2Fengine::ATTACK-CLASSES.md%23Production",
+    "canonical_refs": {
+      "surface": "services/engine/src/config.py#sec-nv-001-production-reverse-proxy-rate-limit",
+      "boundary": "services/engine/src/main.py#start",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Production"
+    },
+    "surface": "Production Reverse Proxy and Ingress Rate Limiting Unverified",
+    "boundary": "Uvicorn started directly on host without reverse proxy definitions.",
+    "subsystem": "Engine Core",
+    "attack_class": "Production",
+    "starting_paths": [
+      "services/engine/src/config.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Production",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "blocked",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/config.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/config.py"
+        ],
+        "invariant": "Production deployment controls must be verified.",
+        "method": "source",
+        "result": "Deployment fact cannot be verified from repository source alone.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Production deployment manifests, Cloudflare rules, or Nginx configurations are maintained outside this repository."
+    ]
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Fmain.py%23sec-003-cors-trusted-hosts-missing::services%2Fengine%2Fsrc%2Fmain.py%23create_app::services%2Fengine::ATTACK-CLASSES.md%23Missing",
+    "canonical_refs": {
+      "surface": "services/engine/src/main.py#sec-003-cors-trusted-hosts-missing",
+      "boundary": "services/engine/src/main.py#create_app",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Missing"
+    },
+    "surface": "Missing Explicit CORS Policy and Host Header Validation in Server Entrypoint",
+    "boundary": "Router included directly on unshielded application.",
+    "subsystem": "Engine Core",
+    "attack_class": "Missing",
+    "starting_paths": [
+      "services/engine/src/main.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Missing",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/main.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/main.py"
+        ],
+        "invariant": "Explicitly allow trusted origins and local hostnames via middleware.",
+        "method": "source",
+        "result": "src/main.py instantiates FastAPI without registering CORSMiddleware or TrustedHostMiddleware.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-003-cors-trusted-hosts-missing"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Fmodels%2Fdatabase.py%23sec-005-database-retention-vacuum-missing::services%2Fengine%2Fsrc%2Fmodels%2Fdatabase.py%23set_sqlite_pragma::services%2Fengine::ATTACK-CLASSES.md%23Lack",
+    "canonical_refs": {
+      "surface": "services/engine/src/models/database.py#sec-005-database-retention-vacuum-missing",
+      "boundary": "services/engine/src/models/database.py#set_sqlite_pragma",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Lack"
+    },
+    "surface": "Lack of Database Retention Policy, Compaction, and SQLite Vacuum Routine",
+    "boundary": "Database file grows indefinitely on disk.",
+    "subsystem": "Engine Core",
+    "attack_class": "Lack",
+    "starting_paths": [
+      "services/engine/src/models/database.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Lack",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/models/database.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/models/database.py"
+        ],
+        "invariant": "Implement automated retention pragma and table archival for historical runs.",
+        "method": "source",
+        "result": "src/models/database.py defines pragmas but lacks periodic vacuum or retention management.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-005-database-retention-vacuum-missing"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Frunner%2Fagent_runner.py%23sec-008-error-api-key-leak-sqlite-sse::services%2Fengine%2Fsrc%2Frunner%2Fagent_runner.py%23AgentRunner.run::services%2Fengine::ATTACK-CLASSES.md%23Potential",
+    "canonical_refs": {
+      "surface": "services/engine/src/runner/agent_runner.py#sec-008-error-api-key-leak-sqlite-sse",
+      "boundary": "services/engine/src/runner/agent_runner.py#AgentRunner.run",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Potential"
+    },
+    "surface": "Potential API Key Leakage via Unfiltered Error Messages in SQLite Telemetry and SSE",
+    "boundary": "Raw str(exc) saved to AgentRun.error_message and AuditLog in SQLite.",
+    "subsystem": "Engine Core",
+    "attack_class": "Potential",
+    "starting_paths": [
+      "services/engine/src/runner/agent_runner.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Potential",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/runner/agent_runner.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/runner/agent_runner.py"
+        ],
+        "invariant": "All error messages persisted or broadcast must be masked with secret_filter.",
+        "method": "source",
+        "result": "agent_runner.py stores str(exc) directly without passing it through secret_filter.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-008-error-api-key-leak-sqlite-sse"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Frunner%2Fagent_runner.py%23sec-010-hardcoded-model-pricing::services%2Fengine%2Fsrc%2Frunner%2Fagent_runner.py%23calculate_token_costs::services%2Fengine::ATTACK-CLASSES.md%23Hardcoded",
+    "canonical_refs": {
+      "surface": "services/engine/src/runner/agent_runner.py#sec-010-hardcoded-model-pricing",
+      "boundary": "services/engine/src/runner/agent_runner.py#calculate_token_costs",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Hardcoded"
+    },
+    "surface": "Hardcoded Model Pricing Inaccuracy Causing Erroneous Financial Telemetry",
+    "boundary": "Hardcoded Flash pricing applied regardless of model.",
+    "subsystem": "Engine Core",
+    "attack_class": "Hardcoded",
+    "starting_paths": [
+      "services/engine/src/runner/agent_runner.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Hardcoded",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/runner/agent_runner.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/runner/agent_runner.py"
+        ],
+        "invariant": "Maintain a dynamic pricing dictionary keyed by model family.",
+        "method": "source",
+        "result": "calculate_token_costs in agent_runner.py applies static multipliers ($0.075/1M) regardless of model argument.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-010-hardcoded-model-pricing"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Frunner%2Fagent_runner.py%23sec-017-session-transaction-commit-conflict::services%2Fengine%2Fsrc%2Frunner%2Fagent_runner.py%23AgentRunner.run::services%2Fengine::ATTACK-CLASSES.md%23Session",
+    "canonical_refs": {
+      "surface": "services/engine/src/runner/agent_runner.py#sec-017-session-transaction-commit-conflict",
+      "boundary": "services/engine/src/runner/agent_runner.py#AgentRunner.run",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Session"
+    },
+    "surface": "Session Transaction Conflict and Premature Commit in send_agent_message",
+    "boundary": "AgentRunner commits already committed session.",
+    "subsystem": "Engine Core",
+    "attack_class": "Session",
+    "starting_paths": [
+      "services/engine/src/runner/agent_runner.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Session",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/runner/agent_runner.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/runner/agent_runner.py"
+        ],
+        "invariant": "Tool function should flush objects without closing the outer session transaction.",
+        "method": "source",
+        "result": "implementations.py calls await session.commit() inside library tool function.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-017-session-transaction-commit-conflict"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Frunner%2Fagent_runner.py%23sec-022-unbounded-context-token-explosion::services%2Fengine%2Fsrc%2Frunner%2Fagent_runner.py%23AgentRunner.run::services%2Fengine::ATTACK-CLASSES.md%23Unbounded",
+    "canonical_refs": {
+      "surface": "services/engine/src/runner/agent_runner.py#sec-022-unbounded-context-token-explosion",
+      "boundary": "services/engine/src/runner/agent_runner.py#AgentRunner.run",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Unbounded"
+    },
+    "surface": "Unbounded Context Window Token Explosion and Infinite Failure Loops",
+    "boundary": "messages.append(tool_result) without length truncation.",
+    "subsystem": "Engine Core",
+    "attack_class": "Unbounded",
+    "starting_paths": [
+      "services/engine/src/runner/agent_runner.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Unbounded",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/runner/agent_runner.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/runner/agent_runner.py"
+        ],
+        "invariant": "Prune or summarize conversation history when context exceeds safe threshold.",
+        "method": "source",
+        "result": "agent_runner.py appends all assistant and tool messages without context trimming.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-022-unbounded-context-token-explosion"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Frunner%2Fsandbox.py%23sec-006-docker-container-naming-zombies::services%2Fengine%2Fsrc%2Frunner%2Fsandbox.py%23DockerSandboxDriver.execute::services%2Fengine::ATTACK-CLASSES.md%23Missing",
+    "canonical_refs": {
+      "surface": "services/engine/src/runner/sandbox.py#sec-006-docker-container-naming-zombies",
+      "boundary": "services/engine/src/runner/sandbox.py#DockerSandboxDriver.execute",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Missing"
+    },
+    "surface": "Missing Deterministic Docker Container Naming Causing Zombie Containers on Host",
+    "boundary": "os.killpg sends SIGKILL to client process while daemon container may remain alive.",
+    "subsystem": "Engine Core",
+    "attack_class": "Missing",
+    "starting_paths": [
+      "services/engine/src/runner/sandbox.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Missing",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/runner/sandbox.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/runner/sandbox.py"
+        ],
+        "invariant": "Assign explicit unique container names and kill the container by name upon timeout.",
+        "method": "source",
+        "result": "sandbox.py executes docker run without --name, and on timeout kills the client PID instead of docker kill.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-006-docker-container-naming-zombies"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Frunner%2Fsandbox.py%23sec-007-docker-network-isolation-missing::services%2Fengine%2Fsrc%2Frunner%2Fsandbox.py%23DockerSandboxDriver.execute::services%2Fengine::ATTACK-CLASSES.md%23Missing",
+    "canonical_refs": {
+      "surface": "services/engine/src/runner/sandbox.py#sec-007-docker-network-isolation-missing",
+      "boundary": "services/engine/src/runner/sandbox.py#DockerSandboxDriver.execute",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Missing"
+    },
+    "surface": "Missing Docker Network Isolation and Kernel Capability Dropping",
+    "boundary": "bash executes commands with active outbound network access.",
+    "subsystem": "Engine Core",
+    "attack_class": "Missing",
+    "starting_paths": [
+      "services/engine/src/runner/sandbox.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Missing",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/runner/sandbox.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/runner/sandbox.py"
+        ],
+        "invariant": "Container must run in complete network isolation with read-only rootfs and dropped capabilities.",
+        "method": "source",
+        "result": "src/runner/sandbox.py does not pass --network=none, --cap-drop=ALL, or --read-only.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-007-docker-network-isolation-missing"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Frunner%2Fsandbox.py%23sec-019-subprocess-fallback-host-rce::services%2Fengine%2Fsrc%2Frunner%2Fsandbox.py%23SubprocessSandboxDriver.execute::services%2Fengine::ATTACK-CLASSES.md%23Host",
+    "canonical_refs": {
+      "surface": "services/engine/src/runner/sandbox.py#sec-019-subprocess-fallback-host-rce",
+      "boundary": "services/engine/src/runner/sandbox.py#SubprocessSandboxDriver.execute",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Host"
+    },
+    "surface": "Host RCE and Complete Environment Leak in Subprocess Sandbox Fallback",
+    "boundary": "Command executes directly on host operating system with host privileges.",
+    "subsystem": "Engine Core",
+    "attack_class": "Host",
+    "starting_paths": [
+      "services/engine/src/runner/sandbox.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Host",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/runner/sandbox.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/runner/sandbox.py"
+        ],
+        "invariant": "Fail-closed if Docker daemon is not available; never run raw commands on host.",
+        "method": "source",
+        "result": "sandbox.py falls back to SubprocessSandboxDriver with shell=True on host.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-019-subprocess-fallback-host-rce"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Fservices%2Frecovery.py%23sec-004-crash-recovery-audit-missing::services%2Fengine%2Fsrc%2Fservices%2Frecovery.py%23run_crash_recovery::services%2Fengine::ATTACK-CLASSES.md%23Incomplete",
+    "canonical_refs": {
+      "surface": "services/engine/src/services/recovery.py#sec-004-crash-recovery-audit-missing",
+      "boundary": "services/engine/src/services/recovery.py#run_crash_recovery",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Incomplete"
+    },
+    "surface": "Incomplete Crash Recovery Audit Log Traceability for Orphaned Tasks",
+    "boundary": "run updated without corresponding AuditLog record.",
+    "subsystem": "Engine Core",
+    "attack_class": "Incomplete",
+    "starting_paths": [
+      "services/engine/src/services/recovery.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Incomplete",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/services/recovery.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/services/recovery.py"
+        ],
+        "invariant": "Record an AuditLog entry with ActionType.ERROR for each recovered crashed run.",
+        "method": "source",
+        "result": "src/services/recovery.py updates AgentRun but omits AuditLog creation.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-004-crash-recovery-audit-missing"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Ftools%2Fimplementations.py%23sec-009-file-write-non-atomic::services%2Fengine%2Fsrc%2Ftools%2Fimplementations.py%23write_file::services%2Fengine::ATTACK-CLASSES.md%23Non-Atomic",
+    "canonical_refs": {
+      "surface": "services/engine/src/tools/implementations.py#sec-009-file-write-non-atomic",
+      "boundary": "services/engine/src/tools/implementations.py#write_file",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Non-Atomic"
+    },
+    "surface": "Non-Atomic File Writes in write_file and patch_file Causing Workspace Corruption",
+    "boundary": "target_file.write_text(content) truncates file before completing write.",
+    "subsystem": "Engine Core",
+    "attack_class": "Non-Atomic",
+    "starting_paths": [
+      "services/engine/src/tools/implementations.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Non-Atomic",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/tools/implementations.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/tools/implementations.py"
+        ],
+        "invariant": "Write to a temporary file in the same directory and replace atomically via os.replace.",
+        "method": "source",
+        "result": "implementations.py uses direct write_text() rather than atomic write-to-temp-and-rename.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-009-file-write-non-atomic"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Ftools%2Fimplementations.py%23sec-011-indirect-prompt-injection::services%2Fengine%2Fsrc%2Frunner%2Fagent_runner.py%23AgentRunner.run::services%2Fengine::ATTACK-CLASSES.md%23Indirect",
+    "canonical_refs": {
+      "surface": "services/engine/src/tools/implementations.py#sec-011-indirect-prompt-injection",
+      "boundary": "services/engine/src/runner/agent_runner.py#AgentRunner.run",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Indirect"
+    },
+    "surface": "Indirect Prompt Injection Vulnerability in Unsanitized Workspace Inputs",
+    "boundary": "Raw string appended to messages role 'tool' without boundary delimiters.",
+    "subsystem": "Engine Core",
+    "attack_class": "Indirect",
+    "starting_paths": [
+      "services/engine/src/tools/implementations.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Indirect",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/tools/implementations.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/tools/implementations.py"
+        ],
+        "invariant": "Wrap tool observations in structural XML tags and instruct model to treat them as untrusted data.",
+        "method": "source",
+        "result": "agent_runner.py appends raw tool results directly to the messages conversation history.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-011-indirect-prompt-injection"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Ftools%2Fimplementations.py%23sec-012-list-directory-unbounded::services%2Fengine%2Fsrc%2Ftools%2Fimplementations.py%23list_directory::services%2Fengine::ATTACK-CLASSES.md%23Unbounded",
+    "canonical_refs": {
+      "surface": "services/engine/src/tools/implementations.py#sec-012-list-directory-unbounded",
+      "boundary": "services/engine/src/tools/implementations.py#list_directory",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Unbounded"
+    },
+    "surface": "Unbounded list_directory Directory Traversal Causing Memory Crash",
+    "boundary": "iterdir() loops through all directory entries unbounded.",
+    "subsystem": "Engine Core",
+    "attack_class": "Unbounded",
+    "starting_paths": [
+      "services/engine/src/tools/implementations.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Unbounded",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/tools/implementations.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/tools/implementations.py"
+        ],
+        "invariant": "Cap directory listing at 500 items and return pagination metadata.",
+        "method": "source",
+        "result": "implementations.py iterates over all target_dir.iterdir() items without pagination.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-012-list-directory-unbounded"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Ftools%2Fimplementations.py%23sec-013-messaging-unvalidated-recipient-size::services%2Fengine%2Fsrc%2Ftools%2Fimplementations.py%23send_agent_message::services%2Fengine::ATTACK-CLASSES.md%23Unvalidated",
+    "canonical_refs": {
+      "surface": "services/engine/src/tools/implementations.py#sec-013-messaging-unvalidated-recipient-size",
+      "boundary": "services/engine/src/tools/implementations.py#send_agent_message",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Unvalidated"
+    },
+    "surface": "Unvalidated to_agent Recipient and Unbounded Payload Size in Inter-Agent Messaging",
+    "boundary": "Unvalidated message inserted into AgentMessage database table.",
+    "subsystem": "Engine Core",
+    "attack_class": "Unvalidated",
+    "starting_paths": [
+      "services/engine/src/tools/implementations.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Unvalidated",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/tools/implementations.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/tools/implementations.py"
+        ],
+        "invariant": "Validate recipient against agent registry and limit payload to 64 KB.",
+        "method": "source",
+        "result": "implementations.py accepts arbitrary string for to_agent and unconstrained dict for payload.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-013-messaging-unvalidated-recipient-size"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Ftools%2Fimplementations.py%23sec-016-read-file-unbounded-binary::services%2Fengine%2Fsrc%2Ftools%2Fimplementations.py%23read_file::services%2Fengine::ATTACK-CLASSES.md%23Unrestricted",
+    "canonical_refs": {
+      "surface": "services/engine/src/tools/implementations.py#sec-016-read-file-unbounded-binary",
+      "boundary": "services/engine/src/tools/implementations.py#read_file",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Unrestricted"
+    },
+    "surface": "Unrestricted Binary File Ingestion in read_file Leading to Process OOM",
+    "boundary": "read_text reads entire file into memory without size check.",
+    "subsystem": "Engine Core",
+    "attack_class": "Unrestricted",
+    "starting_paths": [
+      "services/engine/src/tools/implementations.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Unrestricted",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/tools/implementations.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/tools/implementations.py"
+        ],
+        "invariant": "Verify file size is below 2 MB threshold before reading.",
+        "method": "source",
+        "result": "implementations.py reads entire file without verifying st_size.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-016-read-file-unbounded-binary"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "services%2Fengine%2Fsrc%2Ftools%2Fregistry.py%23sec-020-terminal-timeout-unbounded::services%2Fengine%2Fsrc%2Ftools%2Fregistry.py%23execute_tool::services%2Fengine::ATTACK-CLASSES.md%23Unbounded",
+    "canonical_refs": {
+      "surface": "services/engine/src/tools/registry.py#sec-020-terminal-timeout-unbounded",
+      "boundary": "services/engine/src/tools/registry.py#execute_tool",
+      "subsystem": "services/engine",
+      "attack_class": "ATTACK-CLASSES.md#Unbounded"
+    },
+    "surface": "Unbounded Command Timeout in Tool Dispatching Leading to Resource Exhaustion",
+    "boundary": "Uncapped timeout passed to run_terminal_command.",
+    "subsystem": "Engine Core",
+    "attack_class": "Unbounded",
+    "starting_paths": [
+      "services/engine/src/tools/registry.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Unbounded",
+    "selected_companion_blocks": [
+      "AI-AND-LLM.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Backend engine does not render client DOM directly."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "auditor-1",
+    "reviewed_paths": [
+      "services/engine/src/tools/registry.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "auditor-1",
+        "reviewed_paths": [
+          "services/engine/src/tools/registry.py"
+        ],
+        "invariant": "Enforce strict ceiling: max(5, min(int(timeout), 180)).",
+        "method": "source",
+        "result": "registry.py does not cap timeout parameter value.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sec-020-terminal-timeout-unbounded"
+    ],
+    "unresolved": []
+  }
+]

@@ -140,10 +140,11 @@ def run_terminal_command(
     command: str,
     timeout: int = 60,
     driver: BaseSandboxDriver | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Executes a bash command inside the isolated sandbox."""
     active_driver = driver or get_sandbox_driver()
-    result = active_driver.execute(command=command, cwd=workspace_dir, timeout=timeout)
+    result = active_driver.execute(command=command, cwd=workspace_dir, timeout=timeout, run_id=run_id)
     return {
         "stdout": result.stdout,
         "stderr": result.stderr,
