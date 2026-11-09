@@ -198,6 +198,7 @@ async def test_send_agent_message_persists_to_db():
                 requires_ack=False,
             )
             assert "success" in msg_res.lower()
+            await session.commit()
 
         async with session_factory() as session:
             stmt = select(AgentMessage).where(AgentMessage.from_agent == "homologation_agent")

@@ -20,6 +20,7 @@ from src.models.entities import AgentRun, RunStatus
 from src.runner.agent_runner import AgentRunner, load_agent_profile
 from src.services.currency import get_currency_service
 from src.services.pool import AgentPool, get_agent_pool
+from src.services.queue import QueueCapacityExceededError, QueueService, get_queue_service
 
 
 router = APIRouter(prefix="/api/v1")
@@ -94,9 +95,10 @@ async def dispatch_agent_run(
     request: AgentRunRequest,
     session: AsyncSession = Depends(get_session),
     pool: AgentPool = Depends(get_agent_pool),
+    queue: QueueService = Depends(get_queue_service),
     sse: SSEBroker = Depends(get_sse_broker),
 ):
-    """Asynchronously dispatches an agent task to the concurrency pool (TC-012 to TC-015)."""
+    """Asynchronously dispatches an agent task to the concurrency pool and RabbitMQ queue (SEC-008)."""
     # TC-013: Validate agent YAML exists before accepting
     try:
         load_agent_profile(request.agent_id)
@@ -123,7 +125,24 @@ async def dispatch_agent_run(
         )
     resolved_workspace.mkdir(parents=True, exist_ok=True)
 
+    # SEC-008: Check queue backpressure before persisting or accepting
     run_id = uuid.uuid4()
+    try:
+        await queue.publish_task(
+            run_id=run_id,
+            payload={
+                "agent_id": request.agent_id,
+                "task": request.task,
+                "workspace_slug": request.workspace_slug,
+                "max_iterations": request.max_iterations,
+            },
+        )
+    except QueueCapacityExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        )
+
     run = AgentRun(
         run_id=run_id,
         agent_id=request.agent_id,

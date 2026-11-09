@@ -7,6 +7,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from src.tools.implementations import (
     CouncilSecurityError,
+    DirectoryListing,
     PathTraversalError,
     list_directory,
     patch_file,
@@ -117,8 +118,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     },
                     "timeout": {
                         "type": "integer",
-                        "description": "Timeout in seconds before terminating the process. Defaults to 60.",
+                        "description": "Timeout in seconds before terminating the process (clamped between 5 and 180s). Defaults to 60.",
                         "default": 60,
+                        "minimum": 5,
+                        "maximum": 180,
                     },
                 },
                 "required": ["command"],
@@ -215,16 +218,30 @@ async def execute_tool(
         elif name == "list_directory":
             path = str(arguments.get("path", "."))
             listing = list_directory(workspace_dir=workspace_dir, path=path)
+            if isinstance(listing, DirectoryListing):
+                if listing.has_more:
+                    return json.dumps({
+                        "items": list(listing),
+                        "total_count": listing.total_count,
+                        "has_more": True,
+                        "notice": "Output truncated to 500 items.",
+                    }, indent=2)
+                return json.dumps(list(listing), indent=2)
             return json.dumps(listing, indent=2)
 
         elif name == "run_terminal_command":
             if "command" not in arguments:
                 return "Error: Missing required parameter 'command'."
-            timeout = int(arguments.get("timeout", 60))
+            try:
+                raw_timeout = int(arguments.get("timeout", 60))
+            except (ValueError, TypeError):
+                raw_timeout = 60
+            # SEC-006: Clamped strictly between 5 and 180 seconds
+            clamped_timeout = max(5, min(raw_timeout, 180))
             result = run_terminal_command(
                 workspace_dir=workspace_dir,
                 command=str(arguments["command"]),
-                timeout=timeout,
+                timeout=clamped_timeout,
             )
             return json.dumps(result, indent=2)
 

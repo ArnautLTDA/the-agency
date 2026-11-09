@@ -54,6 +54,7 @@ class ActionType(str, Enum):
     TOOL_RESULT = "tool_result"
     FINAL_RESPONSE = "final_response"
     ERROR = "error"
+    SYSTEM_EVENT = "system_event"
 
 
 class AgentRun(SQLModel, table=True):

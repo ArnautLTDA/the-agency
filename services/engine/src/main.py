@@ -27,6 +27,21 @@ async def lifespan(app: FastAPI):
     await create_db_and_tables(engine)
     logger.info("Database schema initialized with WAL mode.")
 
+    # SEC-019: Auto-upgrade Alembic migrations on startup
+    try:
+        from pathlib import Path
+        from alembic import command
+        from alembic.config import Config
+        alembic_ini_path = Path(__file__).resolve().parent.parent / "alembic.ini"
+        if alembic_ini_path.exists():
+            alembic_cfg = Config(str(alembic_ini_path))
+            sync_url = str(engine.url).replace("+aiosqlite", "")
+            alembic_cfg.set_main_option("sqlalchemy.url", sync_url)
+            command.upgrade(alembic_cfg, "head")
+            logger.info("Alembic migrations verified up to head.")
+    except Exception as exc:
+        logger.warning(f"Alembic auto-upgrade notice: {exc}")
+
     # 2. Run Crash Recovery Sweep for orphaned runs from previous session
     async with session_factory() as session:
         recovered = await run_crash_recovery(session)
@@ -38,11 +53,17 @@ async def lifespan(app: FastAPI):
     rate = await currency.get_usd_brl_rate()
     logger.info(f"USD/BRL Exchange Rate initialized: R$ {rate:.4f}")
 
+    # 4. Initialize Queue Service (RabbitMQ / fallback)
+    from src.services.queue import get_queue_service
+    queue_service = get_queue_service()
+    await queue_service.connect()
+
     logger.info(f"The Agency Engine successfully started on {settings.HOST}:{settings.PORT}")
     yield
 
     # Shutdown routines
     logger.info("Shutting down The Agency Engine...")
+    await queue_service.close()
     pool = get_agent_pool()
     await pool.shutdown()
     await engine.dispose()

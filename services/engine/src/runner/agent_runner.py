@@ -1,5 +1,6 @@
 """Deterministic ReAct Agent Runner with telemetry extraction and circuit breaker (TC-020, TC-021, TC-038, TC-039)."""
 
+import asyncio
 import json
 import os
 import re
@@ -20,7 +21,9 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from src.config import get_settings
 from src.models.entities import ActionType, AgentRun, AuditLog, RunStatus, TokenMetric
 from src.services.currency import get_currency_service
+from src.services.pricing import get_model_pricing
 from src.tools.registry import execute_tool, get_tool_definitions
+from src.utils.security import mask_sensitive_data
 
 
 class AgentProfile(BaseModel):
@@ -88,19 +91,40 @@ def calculate_token_costs(
     cached_tokens: int,
     usd_brl_rate: float,
 ) -> tuple[float, float]:
-    """Computes exact costs in USD and BRL for a given LLM model."""
-    # Gemini Flash pricing baseline:
-    # Prompt: $0.075 / 1M tokens ($0.000000075 / token)
-    # Cached: $0.01875 / 1M tokens ($0.00000001875 / token)
-    # Completion: $0.30 / 1M tokens ($0.00000030 / token)
-    non_cached_prompt = max(0, prompt_tokens - cached_tokens)
-    cost_prompt = non_cached_prompt * 0.000000075
-    cost_cached = cached_tokens * 0.00000001875
-    cost_completion = completion_tokens * 0.00000030
+    """Computes exact costs in USD and BRL for a given LLM model via dynamic pricing catalog (SEC-016)."""
+    pricing = get_model_pricing(model)
+    return pricing.calculate_cost(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cached_tokens=cached_tokens,
+        usd_brl_rate=usd_brl_rate,
+    )
 
-    cost_usd = round(cost_prompt + cost_cached + cost_completion, 8)
-    cost_brl = round(cost_usd * usd_brl_rate, 8)
-    return cost_usd, cost_brl
+
+def estimate_tokens(text: str) -> int:
+    """Estimates token count (~4 characters per token)."""
+    return max(1, len(text) // 4)
+
+
+def prune_context_window(messages: list[Any], max_tokens: int = 32000) -> list[Any]:
+    """Compacts intermediate conversation history if estimated token count exceeds max_tokens (SEC-012)."""
+    total_tokens = sum(
+        estimate_tokens(str(getattr(m, "content", "") if not isinstance(m, dict) else m.get("content", "")))
+        for m in messages
+    )
+    if total_tokens <= max_tokens or len(messages) <= 4:
+        return messages
+
+    # Keep System Prompt (idx 0) and Initial User prompt (idx 1)
+    preserved_prefix = messages[:2]
+    # Keep the most recent 2 messages
+    preserved_suffix = messages[-2:]
+
+    pruned_msg = {
+        "role": "user",
+        "content": "[Histórico anterior compactado: mensagens intermediárias podadas para manter a janela de contexto dentro do limite seguro de 32k tokens.]",
+    }
+    return [*preserved_prefix, pruned_msg, *preserved_suffix]
 
 
 class AgentRunner:
@@ -126,10 +150,22 @@ class AgentRunner:
         self.profile = load_agent_profile(agent_id)
 
     async def _emit_event(self, event_type: str, data: dict[str, Any]):
-        """Emits an event to the SSE stream callback if registered."""
+        """Emits an event to the SSE stream callback if registered (SEC-007)."""
         if self.sse_callback is not None:
             try:
-                await self.sse_callback(event_type=event_type, data=data)
+                sanitized_data = {}
+                for k, v in data.items():
+                    if isinstance(v, str):
+                        sanitized_data[k] = mask_sensitive_data(v)
+                    elif isinstance(v, dict):
+                        sanitized_data[k] = {
+                            sub_k: (mask_sensitive_data(sub_v) if isinstance(sub_v, str) else sub_v)
+                            for sub_k, sub_v in v.items()
+                        }
+                    else:
+                        sanitized_data[k] = v
+
+                await self.sse_callback(event_type=event_type, data=sanitized_data)
             except Exception as exc:
                 logger.warning(f"SSE event emission failed: {exc}")
 
@@ -170,9 +206,13 @@ class AgentRunner:
         total_cost_usd = 0.0
         total_cost_brl = 0.0
         result_summary = "Execution finished without final message."
+        consecutive_tool_failures: list[tuple[str, str, str]] = []
 
         for iteration in range(1, self.max_iterations + 1):
             logger.info(f"Run {self.run_id} | Iteration {iteration}/{self.max_iterations}")
+
+            # SEC-012: Prune context window if history exceeds 32k tokens
+            messages = prune_context_window(messages, max_tokens=32000)
 
             # Call LLM via LiteLLM with transient error retries (503 / 429)
             max_llm_retries = 3
@@ -204,16 +244,17 @@ class AgentRunner:
             if response is None:
                 exc = last_exc or Exception("Failed to receive LLM response.")
                 logger.error(f"LLM API Error on run {self.run_id}: {exc}")
-                await self._emit_event("error", {"iteration": iteration, "error": str(exc)})
+                masked_err = mask_sensitive_data(str(exc))
+                await self._emit_event("error", {"iteration": iteration, "error": masked_err})
                 async with self.session_factory() as session:
                     stmt = select(AgentRun).where(AgentRun.run_id == self.run_id)
                     run_record = (await session.exec(stmt)).one()
                     run_record.status = RunStatus.FAILED
-                    run_record.error_message = str(exc)
+                    run_record.error_message = masked_err
                     run_record.completed_at = datetime.now(timezone.utc)
                     session.add(run_record)
                     await session.commit()
-                return f"Error: LLM invocation failed: {exc}"
+                return f"Error: LLM invocation failed: {masked_err}"
 
             # TC-038 & TC-039: Extract authentic token metrics
             prompt_tokens = 0
@@ -298,7 +339,7 @@ class AgentRunner:
                             run_id=self.run_id,
                             agent_id=self.agent_id,
                             action_type=ActionType.THOUGHT,
-                            content=thought_text,
+                            content=mask_sensitive_data(thought_text),
                         )
                     )
                     await session.commit()
@@ -332,7 +373,7 @@ class AgentRunner:
                                 run_id=self.run_id,
                                 agent_id=self.agent_id,
                                 action_type=ActionType.TOOL_CALL,
-                                content=json.dumps({"tool": func_name, "arguments": args}),
+                                content=mask_sensitive_data(json.dumps({"tool": func_name, "arguments": args})),
                             )
                         )
                         # Execute tool
@@ -351,7 +392,7 @@ class AgentRunner:
                                 run_id=self.run_id,
                                 agent_id=self.agent_id,
                                 action_type=ActionType.TOOL_RESULT,
-                                content=tool_result,
+                                content=mask_sensitive_data(tool_result),
                             )
                         )
                         await session.commit()
@@ -360,6 +401,42 @@ class AgentRunner:
                         "tool_result",
                         {"iteration": iteration, "tool": func_name, "result": tool_result},
                     )
+
+                    # SEC-012: Circuit breaker for 3 identical consecutive failures
+                    is_error = "error" in tool_result.lower()
+                    if is_error:
+                        consecutive_tool_failures.append((func_name, json.dumps(args, sort_keys=True), tool_result.strip()))
+                        if (
+                            len(consecutive_tool_failures) >= 3
+                            and consecutive_tool_failures[-1] == consecutive_tool_failures[-2] == consecutive_tool_failures[-3]
+                        ):
+                            logger.warning(
+                                f"Circuit Breaker tripped for run {self.run_id}: 3 consecutive identical tool failures on '{func_name}'."
+                            )
+                            result_summary = f"Execution aborted: Circuit breaker detected 3 identical consecutive failures on tool '{func_name}'."
+                            async with self.session_factory() as session:
+                                stmt = select(AgentRun).where(AgentRun.run_id == self.run_id)
+                                run_record = (await session.exec(stmt)).one()
+                                run_record.status = RunStatus.FAILED
+                                run_record.error_message = mask_sensitive_data(result_summary)
+                                run_record.iterations = iteration
+                                run_record.total_prompt_tokens = total_prompt_tokens
+                                run_record.total_completion_tokens = total_completion_tokens
+                                run_record.total_cached_tokens = total_cached_tokens
+                                run_record.total_cost_usd = total_cost_usd
+                                run_record.total_cost_brl = total_cost_brl
+                                run_record.result_summary = result_summary
+                                run_record.completed_at = datetime.now(timezone.utc)
+                                session.add(run_record)
+                                await session.commit()
+
+                            await self._emit_event(
+                                "error",
+                                {"iteration": iteration, "error": result_summary},
+                            )
+                            return result_summary
+                    else:
+                        consecutive_tool_failures.clear()
 
                     # Append tool result to conversation history for next turn
                     messages.append({
@@ -404,7 +481,7 @@ class AgentRunner:
                             run_id=self.run_id,
                             agent_id=self.agent_id,
                             action_type=ActionType.FINAL_RESPONSE,
-                            content=result_summary,
+                            content=mask_sensitive_data(result_summary),
                         )
                     )
                     stmt = select(AgentRun).where(AgentRun.run_id == self.run_id)

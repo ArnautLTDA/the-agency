@@ -47,13 +47,49 @@ def resolve_safe_path(workspace_dir: Path, rel_path: str) -> Path:
     return target
 
 
+def _atomic_write(target_path: Path, content: str) -> None:
+    """Writes content to a temporary file in the same directory and replaces atomically (SEC-014)."""
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target_path.parent / f".{target_path.name}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        temp_path.write_text(content, encoding="utf-8")
+        os.replace(temp_path, target_path)
+    except Exception:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+        raise
+
+
 def read_file(workspace_dir: Path, path: str) -> str:
-    """Reads and returns text content from a file inside the authorized workspace."""
+    """Reads and returns text content from a file inside the authorized workspace (SEC-015)."""
     target_file = resolve_safe_path(workspace_dir, path)
     if not target_file.exists():
         return f"Error: File not found at '{path}'."
     if target_file.is_dir():
         return f"Error: Path '{path}' is a directory, not a file."
+
+    # SEC-015: File size limit (2 MB)
+    try:
+        file_size = target_file.stat().st_size
+    except Exception as exc:
+        return f"Error inspecting file '{path}': {exc}"
+
+    max_size = 2 * 1024 * 1024  # 2 MB
+    if file_size > max_size:
+        size_mb = file_size / (1024 * 1024)
+        return f"Error: File '{path}' exceeds maximum readable size of 2 MB ({size_mb:.2f} MB)."
+
+    # SEC-015: Binary detection (first 512 bytes)
+    try:
+        with open(target_file, "rb") as f:
+            header = f.read(512)
+            if b"\x00" in header:
+                return f"Error: File '{path}' appears to be a binary file and cannot be read as text."
+    except Exception as exc:
+        return f"Error inspecting file '{path}': {exc}"
 
     try:
         return target_file.read_text(encoding="utf-8")
@@ -67,14 +103,13 @@ def write_file(
     content: str,
     overwrite: bool = True,
 ) -> str:
-    """Creates or overwrites a file inside workspace, automatically creating parent directories."""
+    """Creates or overwrites a file inside workspace using atomic replacement (SEC-014)."""
     target_file = resolve_safe_path(workspace_dir, path)
     if target_file.exists() and not overwrite:
         return f"Error: File '{path}' already exists and overwrite=False."
 
     try:
-        target_file.parent.mkdir(parents=True, exist_ok=True)
-        target_file.write_text(content, encoding="utf-8")
+        _atomic_write(target_file, content)
         return f"Success: File '{path}' written successfully ({len(content)} characters)."
     except Exception as exc:
         return f"Error writing file '{path}': {exc}"
@@ -86,7 +121,7 @@ def patch_file(
     search_block: str,
     replace_block: str,
 ) -> str:
-    """Surgically replaces a single occurrence of search_block in a file."""
+    """Surgically replaces a single occurrence of search_block in a file atomically (SEC-014)."""
     target_file = resolve_safe_path(workspace_dir, path)
     if not target_file.exists():
         return f"Error: File not found at '{path}'."
@@ -107,15 +142,29 @@ def patch_file(
 
     updated_content = content.replace(search_block, replace_block, 1)
     try:
-        target_file.write_text(updated_content, encoding="utf-8")
+        _atomic_write(target_file, updated_content)
         lines_changed = len(replace_block.splitlines())
         return f"Success: Surgically patched '{path}' ({lines_changed} replacement lines)."
     except Exception as exc:
         return f"Error saving patched file '{path}': {exc}"
 
 
-def list_directory(workspace_dir: Path, path: str = ".") -> list[dict[str, Any]] | str:
-    """Lists files and folders inside a workspace directory with structured metadata."""
+class DirectoryListing(list):
+    """Custom list holding directory entries with pagination metadata (SEC-013)."""
+
+    def __init__(self, items: list[dict[str, Any]], total_count: int, has_more: bool = False):
+        super().__init__(items)
+        self.total_count = total_count
+        self.has_more = has_more
+
+
+def list_directory(
+    workspace_dir: Path,
+    path: str = ".",
+    max_depth: int = 3,
+    max_items: int = 500,
+) -> DirectoryListing | str:
+    """Lists files and folders inside a workspace directory with structured metadata and pagination (SEC-013)."""
     try:
         target_dir = resolve_safe_path(workspace_dir, path)
         if not target_dir.exists():
@@ -123,14 +172,19 @@ def list_directory(workspace_dir: Path, path: str = ".") -> list[dict[str, Any]]
         if not target_dir.is_dir():
             return f"Error: Path '{path}' is a file, not a directory."
 
+        raw_entries = sorted(target_dir.iterdir(), key=lambda p: p.name)
+        total_count = len(raw_entries)
+        has_more = total_count > max_items
+        selected_entries = raw_entries[:max_items]
+
         results = []
-        for item in sorted(target_dir.iterdir()):
+        for item in selected_entries:
             results.append({
                 "name": item.name,
                 "is_dir": item.is_dir(),
                 "size": item.stat().st_size if item.is_file() else 0,
             })
-        return results
+        return DirectoryListing(results, total_count=total_count, has_more=has_more)
     except Exception as exc:
         return f"Error listing directory '{path}': {exc}"
 
@@ -187,5 +241,5 @@ async def send_agent_message(
         status=MessageStatus.PENDING,
     )
     session.add(msg)
-    await session.commit()
+    # SEC-017: Commit cycle belongs to caller/runner; do not commit prematurely inside tool
     return f"Success: Message {msg.id} sent to '{to_agent}' ({valid_msg_type.value})."

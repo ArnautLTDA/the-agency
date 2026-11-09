@@ -1,12 +1,15 @@
-"""Server-Sent Events (SSE) Manager with per-run and global pub/sub (TC-018, TC-019)."""
+"""Server-Sent Events (SSE) Manager with per-run and global pub/sub (TC-018, TC-019, SEC-022)."""
 
 import asyncio
 import json
+import re
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Any
 from loguru import logger
+
+from src.utils.security import mask_sensitive_data
 
 
 @dataclass(frozen=True)
@@ -16,8 +19,9 @@ class SSEEvent:
     data: str
 
     def encode(self) -> str:
-        """Formats the event according to the standard W3C Server-Sent Events protocol."""
-        return f"id: {self.id}\nevent: {self.event}\ndata: {self.data}\n\n"
+        """Formats the event according to W3C Server-Sent Events protocol with newline sanitization (SEC-022)."""
+        clean_event = re.sub(r"[\r\n]+", "", self.event)
+        return f"id: {self.id}\nevent: {clean_event}\ndata: {self.data}\n\n"
 
 
 class SSEBroker:
@@ -37,12 +41,23 @@ class SSEBroker:
         event_type: str,
         data: dict[str, Any],
     ) -> None:
-        """Publishes an event to run-specific subscribers and global listeners."""
+        """Publishes an event to run-specific subscribers and global listeners with framing sanitization (SEC-022)."""
         self._event_counter += 1
+        # SEC-022: Remove newline and carriage return characters from event_type
+        sanitized_event_type = re.sub(r"[\r\n]+", "", event_type)
+
+        # SEC-007: Mask sensitive values
+        sanitized_data = {}
+        for k, v in data.items():
+            if isinstance(v, str):
+                sanitized_data[k] = mask_sensitive_data(v)
+            else:
+                sanitized_data[k] = v
+
         event = SSEEvent(
             id=self._event_counter,
-            event=event_type,
-            data=json.dumps(data),
+            event=sanitized_event_type,
+            data=json.dumps(sanitized_data),
         )
 
         async with self._lock:
