@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: agency-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"   # Protocolo AMQP
+      - "15672:15672" # Painel Web de Gerenciamento (Management UI)
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-agency}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-agency123}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  rabbitmq_data:

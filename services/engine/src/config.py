@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = Field(..., description="Google Gemini API Key (mandatory)")
     GROQ_API_KEY: str | None = Field(default=None, description="Optional Groq fallback key")
     ANTHROPIC_API_KEY: str | None = Field(default=None, description="Optional Anthropic fallback key")
+    ENGINE_API_KEY: str = Field(
+        default="agency-engine-secret-key-2026",
+        description="Static security key required in X-Engine-Key header",
+    )
 
     # Concurrency and Execution limits
     MAX_CONCURRENT_AGENTS: int = Field(
@@ -42,15 +46,35 @@ class Settings(BaseSettings):
         description="Maximum bytes retained for terminal stdout/stderr before truncating",
     )
 
-    # Database
+    # Message Broker (RabbitMQ)
+    RABBITMQ_URL: str = Field(
+        default="amqp://agency:agency123@127.0.0.1:5672/",
+        description="AMQP connection string for RabbitMQ broker",
+    )
+    MAX_QUEUE_CAPACITY: int = Field(
+        default=100,
+        gt=0,
+        description="Maximum pending tasks allowed in queue before returning HTTP 503",
+    )
+
+    # Database & Retention
     DATABASE_URL: str = Field(
         default="sqlite+aiosqlite:///pipeline.db",
         description="Async SQLite database connection string",
     )
+    RETENTION_DAYS: int = Field(
+        default=30,
+        gt=0,
+        description="Number of days to retain execution metrics and logs before purging",
+    )
 
-    # Server Network Bindings
+    # Server Network Bindings & CORS
     HOST: str = Field(default="127.0.0.1", description="Server bind host")
     PORT: int = Field(default=8000, gt=0, le=65535, description="Server bind port")
+    CORS_ORIGINS: list[str] = Field(
+        default=["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000"],
+        description="Allowed CORS origins for web clients/cockpit",
+    )
 
     # Logging
     LOG_LEVEL: str = Field(default="INFO", description="Log level")
@@ -63,6 +87,10 @@ class Settings(BaseSettings):
     DOCKER_MEMORY_LIMIT: str = Field(default="2g", description="Memory limit for sandbox container")
     DOCKER_CPUS_LIMIT: float = Field(default=1.5, description="CPU quota for sandbox container")
     DOCKER_PIDS_LIMIT: int = Field(default=100, description="PIDs limit for sandbox container")
+    ALLOW_LOCAL_SUBPROCESS_DEV: bool = Field(
+        default=False,
+        description="Explicit flag required to permit local subprocess sandbox fallback",
+    )
 
     # External APIs
     AWESOME_API_URL: str = Field(
@@ -90,7 +118,12 @@ def setup_logging(settings: Settings):
     def secret_filter(record):
         sensitive_values = [
             val
-            for val in [settings.GEMINI_API_KEY, settings.GROQ_API_KEY, settings.ANTHROPIC_API_KEY]
+            for val in [
+                settings.GEMINI_API_KEY,
+                settings.GROQ_API_KEY,
+                settings.ANTHROPIC_API_KEY,
+                settings.ENGINE_API_KEY,
+            ]
             if val and len(val) > 4
         ]
         msg = record["message"]
