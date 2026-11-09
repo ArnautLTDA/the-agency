@@ -464,3 +464,55 @@ Funcionalidade: Controle Remoto e Alertas no Microsserviço Telegram (:3008)
     E o orquestrador deve suspender imediatamente novas abordagens e tarefas ativas
     E o Telegram deve receber a confirmação "Esteira operacional pausada com sucesso"
 ```
+
+---
+
+## 7. Segurança de Borda & Remediações Arquiteturais Herdadas da Auditoria (Fase 1)
+
+> [!IMPORTANT]
+> **Origem dos Requisitos:** Esta seção formaliza a alocação e especificação dos achados da auditoria de segurança da Fase 0 (`audits/REPORT.md`, `audits/FINDINGS-DETAIL.md` e `audits/NEEDS-VALIDATION.md`) cujo tratamento arquitetural pertence legitimamente à camada de borda e gateways desacoplados da Fase 1.
+
+### 7.1 SEC-009: Inspeção Semântica Profunda de Injeção de Prompt & Jailbreak (`guardrail-gateway :3007`)
+* **Contexto de Borda:** Na Fase 0, mensagens de ferramentas locais foram envelopadas com tags estruturais (`<untrusted_content>`). No entanto, a interação com clientes desconhecidos via WhatsApp, Telegram e formulários web expõe o sistema a ataques adversariais complexos (Prompt Injection indireto, Jailbreaks, System Prompt Extraction e Command Hijacking).
+* **Especificação Soberana do Gateway de Guardrail:**
+  1. **Inspeção Síncrona Obrigatória:** Nenhuma mensagem externa atinge o `engine-core` sem validação prévia pelo `guardrail-gateway (:3007)`.
+  2. **Motor de Inferência:** Llama Guard 3 executado via Groq LPU com latência estrita inferior a **150 milissegundos**.
+  3. **Categorias Monitoradas:** Violações de segurança, tentativas de forçar personas desautorizadas, injeção de instruções de sistema e tentativa de extração de credenciais.
+  4. **Ação de Bloqueio:** Mensagens classificadas como maliciosas são descartadas na borda, registrando evento em log de segurança e devolvendo resposta neutra de desvio ao remetente, sem consumir tokens do modelo cognitivo principal.
+
+### 7.2 SEC-021: Barramento AMQP Distribuído e Validação Rígida de Payloads (RabbitMQ)
+* **Contexto de Borda:** O RabbitMQ (introduzido na Fase 0 para fila local de tarefas) é expandido na Fase 1 para se tornar o **barramento central de mensageria assíncrona** entre todos os microsserviços e gateways.
+* **Topologia de Exchanges e Queues AMQP:**
+  * **Exchange Principal:** `agency.topic` (Topic Exchange durável).
+  * **Roteamento de Filas:**
+    * `whatsapp.inbound` (binding: `whatsapp.msg.in.*`)
+    * `whatsapp.outbound` (binding: `whatsapp.msg.out.*`)
+    * `telegram.alerts` (binding: `telegram.alert.*`)
+    * `telegram.approvals` (binding: `telegram.approval.*`)
+    * `payment.webhooks` (binding: `payment.event.*`)
+  * **Dead-Letter Exchange (DLX):** `agency.dlx` com fila `agency.poison_messages` para capturar e isolar mensagens malformadas ou com falhas persistentes após 3 tentativas de entrega.
+* **Governança de Tipagem e Teto de Payload:**
+  * Todas as mensagens inter-serviços devem obrigatoriamente encapsular um envelope Pydantic/TypeScript padronizado:
+    * `message_id`: UUID v4
+    * `correlation_id`: UUID v4 (propagado a partir do `X-Request-ID` original)
+    * `from_service`: Nome do microsserviço emissor (validado contra catálogo oficial)
+    * `to_service`: Nome do microsserviço destinatário
+    * `timestamp`: ISO 8601 UTC
+    * `payload`: JSON com teto rígido de **64 KB**. Mensagens excedentes são rejeitadas com erro de validação.
+
+### 7.3 SEC-NV-001: Arquitetura de Reverse Proxy & Ingress Rate Limiting
+* **Contexto de Borda:** Em conformidade com o apontamento `audits/NEEDS-VALIDATION.md`, os servidores Uvicorn e Express da esteira nunca devem ser expostos diretamente à internet pública.
+* **Arquitetura de Ingress de Produção:**
+  1. **Proxy Reverso Unificado:** Nginx / Cloudflare WAF à frente das portas `:8000`, `:3005`, `:3006`, `:3007`, `:3008`, `:3009` e `:3010`.
+  2. **Rate Limiting por IP na Borda:**
+     * Webhooks de pagamento (`/api/v1/inter/webhook`): máximo de **30 req/min por IP** com whitelist dos ranges de IP oficiais do Banco Inter.
+     * Webhooks de mensageria e formulários públicos: máximo de **60 req/min por IP**.
+     * Endpoints de orquestração interna (`/api/v1/agent/run`): acesso bloqueado da internet pública, restrito à rede interna / VPN.
+  3. **Mitigação Anti-DDoS e WAF:** Bloqueio na borda de scanners de vulnerabilidades (SQLi, XSS, Path Traversal) antes de alcançar qualquer código de aplicação.
+
+### 7.4 Desacoplamento das Ferramentas Locais para o Servidor MCP Dedicado (:3010)
+* **Transição Arquitetural da Fase 0 para a Fase 1:**
+  * Na Fase 0, `read_file`, `write_file`, `patch_file`, `list_directory` e `run_terminal_command` foram implementados embutidos no processo Python do `services/engine`.
+  * Na Fase 1, essas ferramentas são **completamente migradas e desacopladas** para o microsserviço autônomo **`workspace-sandbox-service` (Porta `:3010`)**.
+  * O `engine-core` elimina o código nativo de filesystem e executa essas ações estritamente como **MCP Client** via JSON-RPC 2.0 SSE, isolando o processo orquestrador do daemon Docker e do sistema de arquivos local.
+

@@ -57,6 +57,10 @@ O objetivo desta fase é construir o runtime independente que permite aos agente
   * Concorrência via semáforo assíncrono (pool de 3 a 5 agentes simultâneos) e rotina de Crash Recovery no boot identificando tarefas órfãs.
 * **0.5 Telemetria Financeira de Tokens:**
   * Registro detalhado em banco do consumo real de tokens (prompt, completion e cache) e conversão automática para custos em Dólar e Reais.
+* **0.6 Hardening, Governança & Fila Persistente RabbitMQ (Remediação de Auditoria):**
+  * Especificação soberana detalhada em `docs/fase-0-remediacao-hardening.md`.
+  * Neutralização das 16 vulnerabilidades do motor (confinamento de workspace `SEC-001`, sandbox Docker fail-closed sem rede `SEC-002` e `SEC-004`, autenticação via `X-Engine-Key` `SEC-003`, proteção de GC no asyncio `SEC-011`, compactação de contexto `SEC-012`).
+  * Infraestrutura RabbitMQ gerenciada via `docker-compose.yml` (`agency.tasks`), migrações com Alembic (`SEC-019`) e política de retenção de 30 dias com `PRAGMA auto_vacuum = INCREMENTAL` (`SEC-024`).
 
 ---
 
