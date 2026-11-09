@@ -89,10 +89,12 @@ class SubprocessSandboxDriver(BaseSandboxDriver):
                 timed_out=False,
             )
         except subprocess.TimeoutExpired:
-            if proc is not None:
+            if proc is not None and isinstance(getattr(proc, "pid", None), int) and proc.pid > 1:
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except ProcessLookupError:
+                    pgid = os.getpgid(proc.pid)
+                    if pgid > 1:
+                        os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
                     pass
                 stdout_data, stderr_data = proc.communicate()
             else:
@@ -220,10 +222,12 @@ class DockerSandboxDriver(BaseSandboxDriver):
             except Exception:
                 pass
 
-            if proc is not None:
+            if proc is not None and isinstance(getattr(proc, "pid", None), int) and proc.pid > 1:
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except ProcessLookupError:
+                    pgid = os.getpgid(proc.pid)
+                    if pgid > 1:
+                        os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
                     pass
                 stdout_data, stderr_data = proc.communicate()
             else:

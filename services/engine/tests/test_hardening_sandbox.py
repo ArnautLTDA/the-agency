@@ -49,8 +49,12 @@ def test_tc051_docker_security_caps_and_read_only(temp_workspace: Path):
 
 def test_tc052_sandbox_fail_closed_when_docker_unavailable():
     """TC-052 / SEC-002: get_sandbox_driver raises RuntimeError when Docker is offline and fallback is false."""
-    mock_settings = MagicMock(spec=Settings)
+    mock_settings = MagicMock()
     mock_settings.ALLOW_LOCAL_SUBPROCESS_DEV = False
+    mock_settings.DOCKER_IMAGE = "node:20-slim"
+    mock_settings.DOCKER_MEMORY_LIMIT = "2g"
+    mock_settings.DOCKER_CPUS_LIMIT = 1.5
+    mock_settings.DOCKER_PIDS_LIMIT = 100
 
     with patch("src.runner.sandbox.DockerSandboxDriver.is_available", return_value=False):
         with patch("src.runner.sandbox.get_settings", return_value=mock_settings):
@@ -62,8 +66,12 @@ def test_tc052_sandbox_fail_closed_when_docker_unavailable():
 
 def test_tc053_sandbox_fallback_allowed_when_explicitly_configured():
     """TC-053 / SEC-002: get_sandbox_driver returns SubprocessSandboxDriver when ALLOW_LOCAL_SUBPROCESS_DEV is True."""
-    mock_settings = MagicMock(spec=Settings)
+    mock_settings = MagicMock()
     mock_settings.ALLOW_LOCAL_SUBPROCESS_DEV = True
+    mock_settings.DOCKER_IMAGE = "node:20-slim"
+    mock_settings.DOCKER_MEMORY_LIMIT = "2g"
+    mock_settings.DOCKER_CPUS_LIMIT = 1.5
+    mock_settings.DOCKER_PIDS_LIMIT = 100
 
     with patch("src.runner.sandbox.DockerSandboxDriver.is_available", return_value=False):
         with patch("src.runner.sandbox.get_settings", return_value=mock_settings):
@@ -78,10 +86,14 @@ def test_tc054_deterministic_container_naming_and_zombie_cleanup(temp_workspace:
 
     with patch("subprocess.Popen") as mock_popen:
         mock_proc = MagicMock()
-        mock_proc.communicate.side_effect = subprocess.TimeoutExpired(cmd="sleep", timeout=1)
+        mock_proc.pid = 99999
+        mock_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="sleep", timeout=1),
+            ("stdout_killed", "stderr_killed"),
+        ]
         mock_popen.return_value = mock_proc
 
-        with patch("subprocess.run") as mock_run:
+        with patch("subprocess.run") as mock_run, patch("os.killpg") as mock_killpg, patch("os.getpgid", return_value=99999):
             result = driver.execute(command="sleep 10", cwd=temp_workspace, timeout=1, run_id=run_id)
 
             assert result.timed_out is True
