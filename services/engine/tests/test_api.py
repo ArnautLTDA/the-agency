@@ -78,7 +78,7 @@ async def test_tc012_agent_run_dispatch_202_accepted(app_with_db):
             payload = {
                 "agent_id": "homologation_agent",
                 "task": "Test dispatch task",
-                "workspace_dir": "workspaces/clients/default",
+                "workspace_slug": "default",
             }
             res = await client.post("/api/v1/agent/run", json=payload)
             assert res.status_code == 202

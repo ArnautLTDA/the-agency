@@ -24,11 +24,22 @@ from src.services.pool import AgentPool, get_agent_pool
 
 router = APIRouter(prefix="/api/v1")
 
+# Strong references set to prevent asyncio tasks from being prematurely garbage collected (SEC-011)
+_background_tasks: set[asyncio.Task] = set()
+
 
 class AgentRunRequest(BaseModel):
-    agent_id: str = Field(..., description="Agent profile identifier slug (e.g. homologation_agent)")
+    agent_id: str = Field(
+        ...,
+        pattern=r"^[a-z0-9_\-]+$",
+        description="Agent profile identifier slug strictly matching ^[a-z0-9_\\-]+$",
+    )
     task: str = Field(..., min_length=1, max_length=100000, description="Task instruction prompt")
-    workspace_dir: str = Field(default="workspaces/clients/default", description="Workspace directory")
+    workspace_slug: str = Field(
+        default="default",
+        pattern=r"^[a-zA-Z0-9_\-]+$",
+        description="Workspace slug strictly resolving under workspaces/clients/<slug>",
+    )
     max_iterations: int = Field(default=25, gt=0, le=100, description="Max iterations ceiling")
 
 
@@ -100,12 +111,24 @@ async def dispatch_agent_run(
             detail=f"Invalid profile for '{request.agent_id}': {exc}",
         )
 
+    # SEC-001: Canonical confinement to workspaces/clients/<slug>
+    workspace_root = Path("workspaces/clients").resolve()
+    resolved_workspace = (workspace_root / request.workspace_slug).resolve()
+    try:
+        resolved_workspace.relative_to(workspace_root)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid workspace slug: path escapes authorized clients directory",
+        )
+    resolved_workspace.mkdir(parents=True, exist_ok=True)
+
     run_id = uuid.uuid4()
     run = AgentRun(
         run_id=run_id,
         agent_id=request.agent_id,
         task=request.task,
-        workspace_dir=request.workspace_dir,
+        workspace_dir=str(resolved_workspace),
         status=RunStatus.QUEUED,
         max_iterations=request.max_iterations,
     )
@@ -120,14 +143,16 @@ async def dispatch_agent_run(
         run_id=run_id,
         agent_id=request.agent_id,
         task=request.task,
-        workspace_dir=Path(request.workspace_dir),
+        workspace_dir=resolved_workspace,
         session_factory=get_session_factory(session.bind),
         max_iterations=request.max_iterations,
         sse_callback=sse_event_callback,
     )
 
-    # Dispatch to background pool (non-blocking, releases HTTP connection immediately)
-    asyncio.create_task(pool.submit(run_id=run_id, coro=runner.run()))
+    # SEC-011: Strong reference retention prevents premature asyncio Task garbage collection
+    bg_task = asyncio.create_task(pool.submit(run_id=run_id, coro=runner.run()))
+    _background_tasks.add(bg_task)
+    bg_task.add_done_callback(_background_tasks.discard)
 
     return AgentRunResponse(
         run_id=run_id,

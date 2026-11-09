@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -35,7 +36,13 @@ class AgentProfile(BaseModel):
 
 
 def load_agent_profile(agent_id: str, config_dir: Path | None = None) -> AgentProfile:
-    """Loads and validates an agent YAML profile from council/ or pipeline/ directory."""
+    """Loads and validates an agent YAML profile from council/ or pipeline/ directory (SEC-005)."""
+    # SEC-005: Validate slug pattern to prevent directory traversal
+    if not re.match(r"^[a-z0-9_\-]+$", agent_id):
+        raise ValueError(
+            f"Invalid agent_id '{agent_id}'. Slug must match pattern ^[a-z0-9_\\-]+$"
+        )
+
     if config_dir is None:
         # Search relative to project root or services/engine
         candidates = [
@@ -47,6 +54,7 @@ def load_agent_profile(agent_id: str, config_dir: Path | None = None) -> AgentPr
     else:
         config_path = config_dir
 
+    resolved_config_root = config_path.resolve()
     search_files = [
         config_path / "pipeline" / f"{agent_id}.yaml",
         config_path / "council" / f"{agent_id}.yaml",
@@ -56,6 +64,12 @@ def load_agent_profile(agent_id: str, config_dir: Path | None = None) -> AgentPr
     yaml_file = next((f for f in search_files if f.exists()), None)
     if yaml_file is None:
         raise FileNotFoundError(f"Agent profile '{agent_id}' not found in {config_path}.")
+
+    # Verify canonical resolution stays within config directory
+    try:
+        yaml_file.resolve().relative_to(resolved_config_root)
+    except ValueError:
+        raise ValueError(f"Access denied: Profile for '{agent_id}' escapes authorized config root.")
 
     try:
         data = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))

@@ -39,7 +39,7 @@ async def test_tc041_auth_happy_path(app_instance):
             payload = {
                 "agent_id": "homologation_agent",
                 "task": "Authorized task",
-                "workspace_dir": "workspaces/clients/default",
+                "workspace_slug": "default",
             }
             res = await client.post("/api/v1/agent/run", json=payload)
             assert res.status_code == 202
