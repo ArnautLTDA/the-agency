@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from src.api.auth import verify_api_key
 from src.api.sse import SSEBroker, get_sse_broker
 from src.config import get_settings
 from src.models.database import get_session, get_session_factory
@@ -76,6 +77,7 @@ async def health_check(session: AsyncSession = Depends(get_session)):
     "/agent/run",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=AgentRunResponse,
+    dependencies=[Depends(verify_api_key)],
 )
 async def dispatch_agent_run(
     request: AgentRunRequest,
@@ -134,7 +136,10 @@ async def dispatch_agent_run(
     )
 
 
-@router.get("/agent/run/{run_id}")
+@router.get(
+    "/agent/run/{run_id}",
+    dependencies=[Depends(verify_api_key)],
+)
 async def get_agent_run(
     run_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
@@ -168,7 +173,10 @@ async def get_agent_run(
     }
 
 
-@router.get("/events/stream")
+@router.get(
+    "/events/stream",
+    dependencies=[Depends(verify_api_key)],
+)
 async def sse_event_stream(
     run_id: uuid.UUID | None = Query(default=None),
     sse: SSEBroker = Depends(get_sse_broker),

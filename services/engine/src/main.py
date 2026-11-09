@@ -3,8 +3,10 @@
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
+from src.api.middleware import RequestIDMiddleware
 from src.api.router import router
 from src.config import get_settings, setup_logging
 from src.models.database import create_db_and_tables, get_async_engine, init_db
@@ -49,6 +51,7 @@ async def lifespan(app: FastAPI):
 
 def create_app(db_url: str | None = None) -> FastAPI:
     """Factory function for creating and configuring the FastAPI app instance."""
+    settings = get_settings()
     app = FastAPI(
         title="The Agency Engine",
         version="0.1.0",
@@ -56,6 +59,19 @@ def create_app(db_url: str | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.db_url = db_url
+
+    # SEC-023: Request ID tracing middleware
+    app.add_middleware(RequestIDMiddleware)
+
+    # SEC-010: Explicit CORS policy
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     app.include_router(router)
     return app
 
