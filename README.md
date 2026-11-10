@@ -79,7 +79,7 @@ Criação e padronização de todos os sentidos, braços operacionais e ferramen
   * Mineração comercial baseada no **`google-maps-scraper-kit`** com automação leve via Chrome DevTools Protocol (CDP) e grid search a custo zero (R$ 0,00).
   * Pesquisa web autônoma e inteligência de mercado via **SearXNG** (meta-buscador open-source agregando 70+ provedores).
   * Leitura e extração de conteúdo com bypass anti-bot via **`ruyijs`** (SpiderMonkey C++) e limpeza de boilerplate para Markdown limpo via **`Trafilatura`** (<45MB RAM).
-  * Expõe **Servidor MCP via SSE** com ferramentas: `scrape_google_maps`, `enrich_lead_profile`, `search_web`, `fetch_page_markdown` e `deep_research`.
+  * Expõe **Servidor MCP via SSE** com ferramentas: `scrape_google_maps`, `enrich_lead_profile`, `search_web`, `fetch_page_markdown`, `scrape_social_profile` (cookies/perfis) e `deep_research`.
   * Validação ativa prévia de existência de WhatsApp via chamada ao `whatsapp-gateway` (`:3005`) e deduplicação no banco de dados.
 * **1.4 Payment Gateway & MCP Server (Banco Inter API `:3006`):**
   * Microsserviço dedicado isolado em Python FastAPI na porta `:3006` com mTLS nativo (certificados `.crt` e `.key` em pasta restrita).

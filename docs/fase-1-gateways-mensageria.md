@@ -35,7 +35,7 @@ A esteira consolida toda a sua malha operacional em 8 servidores MCP desacoplado
 | **`payment-gateway`** | `:3006` | **Payment MCP Server** (Python FastAPI) | `create_pix_charge`, `get_pix_status`, `simulate_pix_payment`. Confinamento de mTLS Banco Inter. |
 | **`guardrail-gateway`** | `:3007` | **Security Ingress Gateway** (Python FastAPI) | Inspeção Llama Guard 3 (<150ms) e transcrição Groq Whisper (<500ms). Filtro de entrada antes do Core. |
 | **`telegram-gateway`** | `:3008` | **Telegram MCP Server** (Python FastAPI) | `send_telegram_alert`, `request_owner_approval`. Bot bidirecional de João. |
-| **`osint-scraper-gateway`** | `:3009` | **OSINT & Web Research MCP Server** (Python FastAPI) | `scrape_google_maps`, `enrich_lead_profile`, `search_web` (SearXNG), `fetch_page_markdown` (ruyijs + Trafilatura), `deep_research`. |
+| **`osint-scraper-gateway`** | `:3009` | **OSINT & Web Research MCP Server** (Python FastAPI) | `scrape_google_maps`, `enrich_lead_profile`, `search_web` (SearXNG), `fetch_page_markdown` (ruyijs + Trafilatura), `scrape_social_profile` (Cookies/Perfil Persistente), `deep_research`. |
 | **`workspace-sandbox-service`** | `:3010` | **Workspace MCP Server** (Python / Docker) | `read_file`, `write_file`, `patch_file`, `list_directory`, `run_terminal_command` em container efêmero. |
 | **`git-vcs-gateway`** | `:3011` | **Git & GitHub VCS MCP Server** (Python FastAPI) | `git_init_repository`, `git_create_branch`, `git_commit` (com autor granular por agente), `git_get_diff`, `git_get_status`, `github_create_repo`, `github_push`, `github_create_pull_request`. |
 | **`deploy-cloud-gateway`** | `:3012` | **Cloud & Deploy MCP Server** (Python FastAPI) | `deploy_preview_demo` (demos livres Vercel), `deploy_production` (gate de QA + Segurança + PIX pago), `get_deployment_status`, `provision_database` (Supabase Postgres), `set_project_env_vars`. |
@@ -240,6 +240,13 @@ O serviço roda com `SCRAPER_PORT=3009`, persistindo suas tarefas de raspagem no
   * **Parâmetros (`inputSchema`):**
     * `url` (string, obrigatório): Endereço URL completo da página a ser lida.
     * `strip_boilerplate` (boolean, opcional, padrão true): Remove menus, rodapés, banners de cookies e publicidade, entregando exclusivamente o texto útil.
+* **`scrape_social_profile`**: Extrai informações estruturadas de perfis comerciais e decisores em redes sociais (LinkedIn, Instagram, Facebook, X) utilizando injeção de cookies de sessão autenticados (`sessionid`, `li_at`, `auth_token`) ou perfis de navegador persistentes (`user-data-dir`), contornando 2FA e telas de bloqueio de login.
+  * **Parâmetros (`inputSchema`):**
+    * `platform` (string, obrigatório): Rede social alvo (`"instagram"`, `"linkedin"`, `"twitter"`, `"facebook"`).
+    * `profile_url` (string, obrigatório): URL do perfil ou página institucional da empresa/decisor.
+    * `auth_mode` (string, opcional, padrão `"cookie"`): Modo de autenticação (`"cookie"`, `"profile"`, `"public"`).
+    * `extract_posts` (boolean, opcional, padrão false): Coleta as últimas publicações para análise de atividade recente.
+    * `posts_limit` (inteiro, opcional, padrão 5): Quantidade máxima de publicações a extrair.
 * **`deep_research`**: Ferramenta composta que executa a busca no SearXNG e automaticamente faz a leitura profunda e extração em Markdown das top páginas mais relevantes em uma única operação.
   * **Parâmetros (`inputSchema`):**
     * `query` (string, obrigatório): Assunto a ser pesquisado e sintetizado.
@@ -302,6 +309,40 @@ flowchart LR
 3. **Limpeza Heurística de Conteúdo via `Trafilatura`:**
    * Remove automaticamente ruído web: barras de navegação, cabeçalhos, rodapés de copyright, anúncios e caixas de consentimento de cookies.
    * Converte o artigo/conteúdo central diretamente em Markdown limpo com alta precisão semântica (F1 score > 0.90) em 40 a 70 milissegundos por página.
+
+### 6.5 Arquitetura de Acesso a Redes Sociais & OSINT Autenticado
+Para evitar que agentes sofram bloqueios de 2FA (SMS/Authenticator), captchas intrusivos ou banimentos de contas de prospecção, o microsserviço `:3009` adota uma governança de autenticação baseada em **Sessões Persistidas e Injeção de Cookies**:
+
+```
+[ Agente de Prospecção / Inteligência ]
+                   │
+                   ▼ (tools/call scrape_social_profile)
+┌─────────────────────────────────────────────────────────────┐
+│             osint-scraper-gateway (:3009)                   │
+├──────────────────────────────┬──────────────────────────────┤
+│ Modo A: Injeção de Cookies   │ Modo B: Perfil Persistente   │
+│ (Fast & Headless - ~35MB)    │ (User Data Dir - Sessão Viva)│
+│                              │                              │
+│ • LinkedIn: cookie `li_at`   │ • Pasta: storage/profiles/   │
+│ • Instagram: cookie `sessionid` • Login 1x pelo operador    │
+│ • X / Twitter: `auth_token`  │ • Preserva LocalStorage & IP │
+└──────────────┬───────────────┴──────────────┬───────────────┘
+               │                              │
+               ▼                              ▼
+      [ LinkedIn / Instagram / Twitter / Facebook ]
+```
+
+#### Diretrizes de Blindagem Operacional em Redes Sociais:
+1. **Zero Credenciais em Texto Puro:** Usuários e senhas nunca são digitados em formulários HTML de login por automação. A autenticação ocorre exclusivamente via injeção de tokens de sessão já validados.
+2. **Armazenamento Seguro de Cookies:**
+   * Os cookies são armazenados na pasta protegida `storage/cookies/<platform>.json` ou em variáveis de ambiente confidenciais (`LINKEDIN_LI_AT`, `INSTAGRAM_SESSION_ID`).
+   * Arquivos de cookies estão rigorosamente no `.gitignore` e criptografados em repouso.
+3. **Detecção de Sessão Expirada & Fail-Safe:**
+   * Quando uma plataforma invalida a sessão (ex: redirecionamento para `/accounts/login/` no Instagram ou status 401 no LinkedIn), o gateway não entra em loop de retry.
+   * Marca o cookie como `expired`, aborta a coleta daquele perfil com segurança e despacha notificação silenciosa para João via Telegram (`telegram-gateway`) para atualização do token.
+4. **Cadência e Rate Limiting Humanizado:**
+   * Delays aleatórios entre requisições de perfis sociais (mínimo de 4 a 12 segundos).
+   * Semáforo limitador de no máximo 3 coletas sociais simultâneas para não disparar proteções de tráfego anômalo.
 
 ---
 
@@ -515,6 +556,8 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 | **TC-140** | Happy Path | `deploy-cloud-gateway (:3012)` | Deploy de produção aprovado pelo Gate Triplo | Invocação MCP `deploy_production` com 100% de pagamentos, testes verdes e auditoria limpa | Deploy na Vercel executado com sucesso e vinculado ao domínio oficial de produção do cliente. | Alta |
 | **TC-141** | Happy Path | `osint-scraper-gateway (:3009)` | Busca anônima agregada na web via SearXNG | Invocação MCP `search_web` com `query="concorrentes software house campinas"` | Consulta o meta-buscador SearXNG local e retorna lista de resultados consolidados com snippets e URLs em < 800ms. | Alta |
 | **TC-142** | Happy Path | `osint-scraper-gateway (:3009)` | Leitura com bypass anti-bot e extração Markdown | Invocação MCP `fetch_page_markdown` com URL protegida por Cloudflare | Executa via `ruyijs` (SpiderMonkey C++), extrai texto útil sem boilerplate via `Trafilatura` e devolve Markdown limpo consumindo < 45 MB RAM. | Alta |
+| **TC-143** | Happy Path | `osint-scraper-gateway (:3009)` | Extração de perfil social autenticado via cookies | Invocação MCP `scrape_social_profile` com `platform="linkedin"`, `profile_url="https://linkedin.com/in/socio-x"`, `auth_mode="cookie"` | Injeta cookie de sessão `li_at` nos headers, extrai nome, cargo atual e histórico do decisor sem disparar 2FA ou checkpoint de login. | Alta |
+| **TC-144** | Resilience | `osint-scraper-gateway (:3009)` | Detecção de sessão de rede social expirada | Cookie de sessão do Instagram revogado ou expirado | Detecta redirecionamento para login, marca cookie como inválido, notifica João via Telegram e cancela coleta sem travar o worker. | Alta |
 
 ---
 
