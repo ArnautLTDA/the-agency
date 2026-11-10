@@ -32,7 +32,7 @@ A esteira consolida toda a sua malha operacional em 8 servidores MCP desacoplado
 | :--- | :--- | :--- | :--- |
 | **`engine-core`** | `:8000` | **MCP Client (Host) & Orquestrador** | Conecta-se a todos os servidores MCP via SSE, gerencia estado SQLite WAL e raciocínio ReAct. |
 | **`whatsapp-gateway`** | `:3005` | **WhatsApp MCP Server** (Node.js) | `send_whatsapp_message`, `send_whatsapp_media`, `check_whatsapp_numbers`, `get_whatsapp_session_status`. |
-| **`payment-gateway`** | `:3006` | **Payment MCP Server** (Python FastAPI) | `create_pix_charge`, `get_pix_status`, `simulate_pix_payment`. Confinamento de mTLS Banco Inter. |
+| **`payment-gateway`** | `:3006` | **Payment & Banking MCP Server** (Python FastAPI) | `create_pix_charge`, `get_pix_status`, `simulate_pix_payment`, `get_account_balance`, `get_billing_metrics`. Confinamento de mTLS Banco Inter. |
 | **`guardrail-gateway`** | `:3007` | **Security Ingress Gateway** (Python FastAPI) | Inspeção Llama Guard 3 (<150ms) e transcrição Groq Whisper (<500ms). Filtro de entrada antes do Core. |
 | **`telegram-gateway`** | `:3008` | **Telegram MCP Server** (Python FastAPI) | `send_telegram_alert`, `request_owner_approval`. Bot bidirecional de João. |
 | **`osint-scraper-gateway`** | `:3009` | **OSINT & Web Research MCP Server** (Python FastAPI) | `scrape_google_maps`, `enrich_lead_profile`, `search_web` (SearXNG), `fetch_page_markdown` (ruyijs + Trafilatura), `scrape_social_profile` (Cookies/Perfil Persistente), `deep_research`. |
@@ -174,17 +174,34 @@ O microsserviço `guardrail-gateway` opera na porta `:3007` como um gateway de s
 | :--- | :--- | :--- | :--- |
 | `POST` (REST) | `/api/v1/inter/webhook` | Webhook HTTPS oficial Banco Inter | Recebe confirmação de liquidação, valida autenticidade e notifica o `engine-core` (`:8000`). |
 | `POST` (REST) | `/api/v1/mock/pix/pay/{txid}` | Path param `txid` | Endpoint exclusivo de testes (`MOCK_PAYMENTS=true`): simula liquidação bancária sem dinheiro real. |
-| `GET` (MCP SSE) | `/sse` | Conexão SSE | Canal de comunicação MCP JSON-RPC 2.0 para emissão e consulta de PIX via ferramentas. |
+| `GET` (REST) | `/api/v1/banking/balance` | Query: `date` (opcional) | Consulta direta do saldo disponível, bloqueado e limite via API Banking v2. |
+| `GET` (REST) | `/api/v1/banking/statement` | Query: `start_date`, `end_date` | Consulta do extrato de movimentações e cálculo de faturamento bruto no período. |
+| `GET` (MCP SSE) | `/sse` | Conexão SSE | Canal de comunicação MCP JSON-RPC 2.0 para emissão e consulta de PIX e métricas bancárias via ferramentas. |
 
 #### Catálogo de Ferramentas MCP Expostas (`tools/list`):
 * **`create_pix_charge`**: Autentica via mTLS no Banco Inter, cria cobrança PIX imediata (`PUT /banking/v2/pix/cob/{txid}`) e retorna `txid`, string Copia e Cola e imagem do QR Code em Base64. Parâmetros: `lead_id` (inteiro), `amount_cents` (inteiro, ex: 75000 para R$ 750,00), `description` (string).
 * **`get_pix_status`**: Consulta o status atual de uma cobrança PIX no banco. Parâmetros: `txid` (string).
 * **`simulate_pix_payment`**: Simula a liquidação de um PIX em ambiente de desenvolvimento/teste. Parâmetros: `txid` (string).
+* **`get_account_balance`**: Consulta o saldo consolidado em tempo real da conta corrente empresarial no Banco Inter via API Banking v2 (`GET /banking/v2/saldo`).
+  * **Parâmetros (`inputSchema`):**
+    * `date` (string, opcional, formato YYYY-MM-DD): Data de corte para consulta de saldo histórico. Se omitido, retorna a posição em tempo real.
+  * **Retorno:** Objeto com `disponivel`, `bloqueado_cheque`, `bloqueado_judicial`, `bloqueado_administrativo`, `limite` e `timestamp`.
+* **`get_billing_metrics`**: Consulta o extrato oficial no Banco Inter (`GET /banking/v2/extrato`), filtra créditos e liquidações PIX, consolidando faturamento bruto, quantidade de recebimentos e ticket médio do período.
+  * **Parâmetros (`inputSchema`):**
+    * `start_date` (string, obrigatório, formato YYYY-MM-DD): Data inicial do período de faturamento.
+    * `end_date` (string, obrigatório, formato YYYY-MM-DD): Data final do período de faturamento.
+  * **Retorno:** Objeto com `total_revenue_cents`, `total_revenue_formatted`, `transaction_count`, `average_ticket_formatted`, `period_start`, `period_end`.
 
 ### 5.3 Fluxo de Liquidação e Comemoração
 1. Ao detectar a confirmação bancária do PIX, o `payment-gateway` atualiza a tabela `pix_transactions` para `CONCLUIDA`.
 2. Emite webhook interno para o `engine-core` (`POST http://localhost:8000/api/v1/gateways/pix/webhook`).
 3. O `engine-core` transiciona o lead para `CONTRATO_ASSINADO` / `EM_DESENVOLVIMENTO` e aciona a ferramenta MCP do `telegram-gateway` para disparar a notificação comemorativa no celular de João.
+
+### 5.4 Métricas de Faturamento & Governança Financeira
+O microsserviço `:3006` não apenas recebe pagamentos, mas atua como a **fonte oficial de verdade financeira** da agência:
+* **Escopo OAuth2:** Conexão mTLS consome o escopo `extrato.read` concedido no Internet Banking PJ do Banco Inter.
+* **Alimentação do Conselho Executivo:** Permite que agentes executivos monitorem metas de faturamento, liquidez em caixa e ponto de equilíbrio sem necessidade de intervenção humana ou compartilhamento de acessos ao aplicativo bancário.
+* **Comando Administrativo `/status`:** O bot do Telegram (`:3008`) consome a ferramenta `get_account_balance` para incluir o saldo líquido real em caixa nos relatórios periódicos enviados a João.
 
 ---
 
@@ -558,6 +575,8 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 | **TC-142** | Happy Path | `osint-scraper-gateway (:3009)` | Leitura com bypass anti-bot e extração Markdown | Invocação MCP `fetch_page_markdown` com URL protegida por Cloudflare | Executa via `ruyijs` (SpiderMonkey C++), extrai texto útil sem boilerplate via `Trafilatura` e devolve Markdown limpo consumindo < 45 MB RAM. | Alta |
 | **TC-143** | Happy Path | `osint-scraper-gateway (:3009)` | Extração de perfil social autenticado via cookies | Invocação MCP `scrape_social_profile` com `platform="linkedin"`, `profile_url="https://linkedin.com/in/socio-x"`, `auth_mode="cookie"` | Injeta cookie de sessão `li_at` nos headers, extrai nome, cargo atual e histórico do decisor sem disparar 2FA ou checkpoint de login. | Alta |
 | **TC-144** | Resilience | `osint-scraper-gateway (:3009)` | Detecção de sessão de rede social expirada | Cookie de sessão do Instagram revogado ou expirado | Detecta redirecionamento para login, marca cookie como inválido, notifica João via Telegram e cancela coleta sem travar o worker. | Alta |
+| **TC-145** | Happy Path | `payment-gateway (:3006)` | Consulta de saldo consolidado em tempo real via Banking v2 | Invocação MCP `get_account_balance` | Autentica via mTLS com escopo `extrato.read`, consulta `GET /banking/v2/saldo` e retorna valores de saldo disponível, bloqueado e limite em < 600ms. | Alta |
+| **TC-146** | Happy Path | `payment-gateway (:3006)` | Consolidação de métricas de faturamento por período | Invocação MCP `get_billing_metrics` com `start_date="2026-11-01"`, `end_date="2026-11-30"` | Consulta extrato oficial, consolida créditos recebidos, calcula faturamento bruto e ticket médio sem expor credenciais bancárias. | Alta |
 
 ---
 

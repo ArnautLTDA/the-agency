@@ -87,7 +87,8 @@ Criação e padronização de todos os sentidos, braços operacionais e ferramen
   * Validação ativa prévia de existência de WhatsApp via chamada ao `whatsapp-gateway` (`:3005`) e deduplicação no banco de dados.
 * **1.4 Payment Gateway & MCP Server (Banco Inter API `:3006`):**
   * Microsserviço dedicado isolado em Python FastAPI na porta `:3006` com mTLS nativo (certificados `.crt` e `.key` em pasta restrita).
-  * Expõe **Servidor MCP via SSE** com ferramentas: `create_pix_charge`, `get_pix_status` e `simulate_pix_payment`.
+  * Expõe **Servidor MCP via SSE** com ferramentas: `create_pix_charge`, `get_pix_status`, `simulate_pix_payment`, `get_account_balance` e `get_billing_metrics`.
+  * Consulta de saldo consolidado em tempo real e consolidação de faturamento via API Banking v2 (`extrato.read`).
   * Emissão de cobrança com PIX dinâmico (QR Code em Base64 + chave Copia e Cola) e webhook de confirmação instantânea.
 * **1.5 Telegram Gateway & MCP Server (`:3008`):**
   * Microsserviço isolado para comunicação bidirecional com João: alertas de pagamentos, tentativas de invasão e quedas de sessão.
