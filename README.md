@@ -14,12 +14,14 @@
 the-agency/
 ├── services/
 │   ├── engine/              # Orquestrador Central de Agentes (FastAPI :8000)
-│   ├── whatsapp/            # WhatsApp Gateway (Node.js Baileys :3005)
-│   ├── payment/             # Payment Gateway Banco Inter mTLS (FastAPI :3006)
+│   ├── whatsapp/            # WhatsApp Gateway & MCP Server (Node.js Baileys :3005)
+│   ├── payment/             # Payment Gateway Banco Inter mTLS & MCP Server (FastAPI :3006)
 │   ├── guardrail/           # Ingress Guardrail Groq LPU + Whisper (FastAPI :3007)
-│   ├── telegram/            # Bot Telegram Bidirecional do Chefe (FastAPI :3008)
-│   ├── scraper/             # Scraper OSINT Google Maps/Web (FastAPI :3009)
-│   └── sandbox/             # Workspace Filesystem & Docker Execution Service (:3010)
+│   ├── telegram/            # Bot Telegram Bidirecional & MCP Server (FastAPI :3008)
+│   ├── scraper/             # OSINT & Web Research MCP Server (SearXNG + ruyijs + Scraper Kit :3009)
+│   ├── sandbox/             # Workspace Filesystem & Docker Execution MCP Server (:3010)
+│   ├── git/                 # Git & GitHub VCS MCP Server (FastAPI :3011)
+│   └── deploy/              # Cloud & Deploy MCP Server Vercel/Supabase (FastAPI :3012)
 ├── apps/
 │   └── cockpit/             # Painel de Comando Web de João (Next.js 15 / Tailwind :3000)
 ├── workspaces/              # Sandboxes isolados onde os projetos de clientes são programados
@@ -60,9 +62,9 @@ O objetivo desta fase é construir o runtime independente que permite aos agente
 
 ---
 
-## FASE 1: Gateways de Borda & Mensageria Externa
+## FASE 1: Suíte de Microsserviços e Ferramentas MCP (A Caixa 100% Fechada)
 
-Criação dos sentidos e braços operacionais do sistema com o mundo exterior (especificação soberana detalhada em `docs/fase-1-gateways-mensageria.md`).
+Criação e padronização de todos os sentidos, braços operacionais e ferramentas de execução da esteira sob o protocolo aberto MCP (especificação soberana detalhada em `docs/fase-1-gateways-mensageria.md`).
 
 * **1.1 WhatsApp Gateway & MCP Server (Node.js / Baileys `:3005`):**
   * Microsserviço independente rodando em Node.js com reconexão automática e sessão Multi-Device (`storage/whatsapp/auth_info/`).
@@ -73,9 +75,11 @@ Criação dos sentidos e braços operacionais do sistema com o mundo exterior (e
   * Toda mensagem de cliente no WhatsApp é inspecionada antes de tocar o orquestrador central.
   * Transcrição instantânea de mensagens de voz (.ogg) recebidas de clientes via Groq Whisper (`whisper-large-v3`) em <500ms.
   * Bloqueio silencioso de prompt injection, jailbreaks e comandos maliciosos, com registro em `security_incidents` e alerta direto para o Telegram de João.
-* **1.3 Scraper & OSINT MCP Server (`:3009`):**
-  * Baseado no motor open-source **`google-maps-scraper-kit`** com automação leve via Chrome DevTools Protocol (CDP) e grid search a custo zero (R$ 0,00).
-  * Expõe **Servidor MCP via SSE** com ferramentas: `scrape_google_maps` e `enrich_lead_profile` (redes sociais, Instagram e e-mails verificados).
+* **1.3 OSINT & Web Research MCP Server (`:3009`):**
+  * Mineração comercial baseada no **`google-maps-scraper-kit`** com automação leve via Chrome DevTools Protocol (CDP) e grid search a custo zero (R$ 0,00).
+  * Pesquisa web autônoma e inteligência de mercado via **SearXNG** (meta-buscador open-source agregando 70+ provedores).
+  * Leitura e extração de conteúdo com bypass anti-bot via **`ruyijs`** (SpiderMonkey C++) e limpeza de boilerplate para Markdown limpo via **`Trafilatura`** (<45MB RAM).
+  * Expõe **Servidor MCP via SSE** com ferramentas: `scrape_google_maps`, `enrich_lead_profile`, `search_web`, `fetch_page_markdown` e `deep_research`.
   * Validação ativa prévia de existência de WhatsApp via chamada ao `whatsapp-gateway` (`:3005`) e deduplicação no banco de dados.
 * **1.4 Payment Gateway & MCP Server (Banco Inter API `:3006`):**
   * Microsserviço dedicado isolado em Python FastAPI na porta `:3006` com mTLS nativo (certificados `.crt` e `.key` em pasta restrita).
@@ -85,6 +89,12 @@ Criação dos sentidos e braços operacionais do sistema com o mundo exterior (e
   * Microsserviço isolado para comunicação bidirecional com João: alertas de pagamentos, tentativas de invasão e quedas de sessão.
   * Expõe **Servidor MCP via SSE** com ferramentas: `send_telegram_alert` e `request_owner_approval`.
   * Comandos de controle rápido pelo celular (`/status`, `/pausar`, `/retomar`, `/aprovar <lead_id>`).
+* **1.6 Git & GitHub VCS MCP Server (`:3011`):**
+  * Microsserviço isolado para controle de versão local e remoto via GitHub API REST v3 (`GITHUB_TOKEN` confinado).
+  * Expõe **Servidor MCP via SSE** com ferramentas: `git_init_repository`, `git_create_branch`, `git_commit` (Conventional Commits com assinatura granular por agente), `git_get_diff`, `github_create_repo` e `github_create_pull_request`.
+* **1.7 Cloud & Deploy MCP Server (`:3012`):**
+  * Microsserviço isolado integrando Vercel REST API e Supabase Management API.
+  * Expõe **Servidor MCP via SSE** com ferramentas: `deploy_preview_demo` (demos comerciais livres com URLs públicas instantâneas), `deploy_production` (gate triplo estrito: 50%+50% PIX pago, QA 100% verde e auditoria de segurança limpa), `provision_database` (Postgres Supabase) e `set_project_env_vars`.
 
 ---
 

@@ -1,6 +1,6 @@
-# FASE 1: Gateways de Borda & Mensageria Externa
+# FASE 1: Suíte de Microsserviços e Ferramentas MCP (A Caixa de Ferramentas Completa da Agência)
 
-Este documento estabelece as especificações arquiteturais soberanas, contratos de integração, regras de segurança, esquemas de dados e matriz de testes para os **Gateways de Borda e Mensageria Externa (Fase 1)** da software house autônoma.
+Este documento estabelece as especificações arquiteturais soberanas, contratos de integração, regras de segurança, esquemas de dados e matriz de testes para **todos os Gateways de Borda, Microsserviços e Servidores de Ferramentas MCP (Fase 1)** da software house autônoma.
 
 Apenas especificações arquiteturais, regras e contratos conceituais (zero código-fonte de implementação).
 
@@ -24,9 +24,9 @@ Apenas especificações arquiteturais, regras e contratos conceituais (zero cód
 
 ---
 
-## 2. Topologia Geral de Servidores MCP & Portas
+## 2. Topologia Geral de Servidores MCP & Portas (A Caixa 100% Fechada)
 
-A esteira opera sob a seguinte malha de servidores MCP desacoplados:
+A esteira consolida toda a sua malha operacional em 8 servidores MCP desacoplados e independentes:
 
 | Serviço / Microsserviço | Porta Local | Papel na Arquitetura MCP | Ferramentas MCP Expostas (`tools/list`) |
 | :--- | :--- | :--- | :--- |
@@ -35,8 +35,10 @@ A esteira opera sob a seguinte malha de servidores MCP desacoplados:
 | **`payment-gateway`** | `:3006` | **Payment MCP Server** (Python FastAPI) | `create_pix_charge`, `get_pix_status`, `simulate_pix_payment`. Confinamento de mTLS Banco Inter. |
 | **`guardrail-gateway`** | `:3007` | **Security Ingress Gateway** (Python FastAPI) | Inspeção Llama Guard 3 (<150ms) e transcrição Groq Whisper (<500ms). Filtro de entrada antes do Core. |
 | **`telegram-gateway`** | `:3008` | **Telegram MCP Server** (Python FastAPI) | `send_telegram_alert`, `request_owner_approval`. Bot bidirecional de João. |
-| **`osint-scraper-gateway`** | `:3009` | **Scraper OSINT MCP Server** (Python FastAPI) | `scrape_google_maps`, `enrich_lead_profile`. Extração headless isolada. |
-| **`workspace-sandbox-service`** | `:3010` | **Workspace MCP Server** (Python / Docker) | `read_file`, `write_file`, `patch_file`, `list_directory`, `run_terminal_command`. |
+| **`osint-scraper-gateway`** | `:3009` | **OSINT & Web Research MCP Server** (Python FastAPI) | `scrape_google_maps`, `enrich_lead_profile`, `search_web` (SearXNG), `fetch_page_markdown` (ruyijs + Trafilatura), `deep_research`. |
+| **`workspace-sandbox-service`** | `:3010` | **Workspace MCP Server** (Python / Docker) | `read_file`, `write_file`, `patch_file`, `list_directory`, `run_terminal_command` em container efêmero. |
+| **`git-vcs-gateway`** | `:3011` | **Git & GitHub VCS MCP Server** (Python FastAPI) | `git_init_repository`, `git_create_branch`, `git_commit` (com autor granular por agente), `git_get_diff`, `git_get_status`, `github_create_repo`, `github_push`, `github_create_pull_request`. |
+| **`deploy-cloud-gateway`** | `:3012` | **Cloud & Deploy MCP Server** (Python FastAPI) | `deploy_preview_demo` (demos livres Vercel), `deploy_production` (gate de QA + Segurança + PIX pago), `get_deployment_status`, `provision_database` (Supabase Postgres), `set_project_env_vars`. |
 
 ### Diagrama de Comunicação MCP:
 
@@ -47,6 +49,8 @@ flowchart TD
         INTER_API["Banco Inter API (BACEN)"]
         TELEGRAM_NET["Telegram Network (João)"]
         GMAPS["Google Maps & Web"]
+        GITHUB_API["GitHub API (Repositórios & PRs)"]
+        VERCEL_SUPABASE["Vercel & Supabase APIs (Deploy & DB)"]
     end
 
     subgraph Servidores_MCP["Servidores MCP Desacoplados (Microsserviços)"]
@@ -54,8 +58,10 @@ flowchart TD
         PAY_SVC["payment-gateway (:3006)<br/>FastAPI + Inter mTLS + Payment MCP Server"]
         GUARD_SVC["guardrail-gateway (:3007)<br/>Groq LPU Guard + Whisper Transcritor"]
         TG_SVC["telegram-gateway (:3008)<br/>FastAPI + Telegram MCP Server"]
-        OSINT_SVC["osint-scraper-gateway (:3009)<br/>Playwright + Scraper MCP Server"]
+        OSINT_SVC["osint-scraper-gateway (:3009)<br/>Scraper Kit + SearXNG + ruyijs MCP Server"]
         SANDBOX_SVC["workspace-sandbox-service (:3010)<br/>Docker Daemon + Workspace MCP Server"]
+        GIT_SVC["git-vcs-gateway (:3011)<br/>FastAPI + Git/GitHub VCS MCP Server"]
+        DEPLOY_SVC["deploy-cloud-gateway (:3012)<br/>FastAPI + Vercel/Supabase Deploy MCP Server"]
     end
 
     subgraph Orquestrador["Núcleo Orquestrador Central"]
@@ -64,11 +70,13 @@ flowchart TD
     end
 
     %% MCP Protocol Calls
-    CORE <-->|MCP JSON-RPC: tools/list & tools/call via SSE| WPP_SVC
-    CORE <-->|MCP JSON-RPC: tools/list & tools/call via SSE| PAY_SVC
-    CORE <-->|MCP JSON-RPC: tools/list & tools/call via SSE| TG_SVC
-    CORE <-->|MCP JSON-RPC: tools/list & tools/call via SSE| OSINT_SVC
-    CORE <-->|MCP JSON-RPC: tools/list & tools/call via SSE| SANDBOX_SVC
+    CORE <-->|MCP JSON-RPC via SSE| WPP_SVC
+    CORE <-->|MCP JSON-RPC via SSE| PAY_SVC
+    CORE <-->|MCP JSON-RPC via SSE| TG_SVC
+    CORE <-->|MCP JSON-RPC via SSE| OSINT_SVC
+    CORE <-->|MCP JSON-RPC via SSE| SANDBOX_SVC
+    CORE <-->|MCP JSON-RPC via SSE| GIT_SVC
+    CORE <-->|MCP JSON-RPC via SSE| DEPLOY_SVC
 
     %% Ingress Flow
     WPP <-->|WebSocket Criptografado| WPP_SVC
@@ -80,6 +88,8 @@ flowchart TD
     %% External APIs
     OSINT_SVC -->|Validação onWhatsApp| WPP_SVC
     PAY_SVC <-->|mTLS OAuth2 + PIX| INTER_API
+    GIT_SVC <-->|GitHub Token API & Git Push| GITHUB_API
+    DEPLOY_SVC <-->|Deploy Preview/Prod & DB Provision| VERCEL_SUPABASE
     INTER_API -->|Webhook PIX Confirmado| PAY_SVC
     PAY_SVC -->|Notificação de Liquidação| CORE
 
@@ -221,6 +231,19 @@ O serviço roda com `SCRAPER_PORT=3009`, persistindo suas tarefas de raspagem no
     * `lead_id` (inteiro, obrigatório): Identificador do lead no banco `pipeline.db`.
     * `website` (string, obrigatório): URL do site do cliente a ser inspecionado.
     * `business_name` (string, obrigatório): Nome do estabelecimento.
+* **`search_web`**: Realiza buscas anônimas na web agregando mais de 70 provedores (Google, Bing, DuckDuckGo, Wikipedia, Reddit) através do motor meta-search SearXNG auto-hospedado.
+  * **Parâmetros (`inputSchema`):**
+    * `query` (string, obrigatório): Termo ou pergunta de pesquisa.
+    * `categories` (string, opcional, padrão `"general"`): Categoria de busca (`"general"`, `"it"`, `"science"`, `"news"`).
+    * `limit` (inteiro, opcional, padrão 5): Quantidade de resultados e snippets a retornar (máx 20).
+* **`fetch_page_markdown`**: Acessa páginas web dinâmicas contornando proteções anti-bot (Cloudflare, Akamai) via motor headless C++ `ruyijs` (Firefox SpiderMonkey) e converte o HTML em Markdown estruturado e limpo utilizando `Trafilatura`.
+  * **Parâmetros (`inputSchema`):**
+    * `url` (string, obrigatório): Endereço URL completo da página a ser lida.
+    * `strip_boilerplate` (boolean, opcional, padrão true): Remove menus, rodapés, banners de cookies e publicidade, entregando exclusivamente o texto útil.
+* **`deep_research`**: Ferramenta composta que executa a busca no SearXNG e automaticamente faz a leitura profunda e extração em Markdown das top páginas mais relevantes em uma única operação.
+  * **Parâmetros (`inputSchema`):**
+    * `query` (string, obrigatório): Assunto a ser pesquisado e sintetizado.
+    * `top_n` (inteiro, opcional, padrão 3): Número de páginas de topo para minerar e consolidar.
 
 ### 6.3 Pipeline de Integração, Qualificação & WhatsApp Verification
 A grande força de unir o `google-maps-scraper-kit` ao ecossistema da software house é o pipeline de qualificação prévia antes da abordagem:
@@ -247,6 +270,38 @@ flowchart TD
 3. **Filtro Ativo no WhatsApp (`onWhatsApp`):** O microsserviço `:3009` consulta a ferramenta MCP `check_whatsapp_numbers` no `whatsapp-gateway` (`:3005`). Se o número for telefone fixo sem WhatsApp ou linha desativada, o lead é descartado imediatamente.
 4. **Deduplicação Soberana:** O sistema valida contra a tabela `leads` no SQLite central. Se a empresa já tiver sido prospectada ou estiver no funil, é ignorada.
 5. **Ingestão no Funil Comercial:** Apenas estabelecimentos validados (com WhatsApp ativo confirmado, nicho identificado e dados de redes sociais) são cadastrados como `NOVO` e disponibilizados para o agente de abordagem comercial.
+
+### 6.4 Motor de Pesquisa Web & Inteligência de Mercado (SearXNG + `ruyijs` + Trafilatura)
+Para pesquisa de mercado autônoma, levantamento de concorrentes, análise de documentações técnicas e OSINT geral, o microsserviço `:3009` opera um pipeline de duas etapas de alta performance e baixo consumo de recursos:
+
+```mermaid
+flowchart LR
+    subgraph Descoberta["Etapa 1: Descoberta (Meta-Search)"]
+        QUERY["Pergunta / Query do Agente"] --> SEARX["SearXNG Local (:8888)<br/>Agrega Google, Bing, DDG, Wiki"]
+        SEARX --> RESULTS["JSON com URLs & Snippets"]
+    end
+    
+    subgraph Leitura["Etapa 2: Leitura Profunda & Limpeza"]
+        RESULTS --> RUYI["ruyijs (SpiderMonkey C++)<br/>Bypass de Cloudflare & Render JS (~30MB RAM)"]
+        RUYI --> TRAF["Trafilatura (Rust Engine)<br/>Remoção de Boilerplate em ~50ms"]
+        TRAF --> MD["Markdown Estruturado e Limpo<br/>(Economia de até 85% de Tokens)"]
+    end
+    
+    MD --> AGENT_OUT["Agente / LLM Context"]
+```
+
+#### Fundamentos Técnicos:
+1. **Descoberta via SearXNG (`searxng/searxng` — 38k+ estrelas):**
+   * Metamotor de busca auto-hospedado via Docker local.
+   * Agrega e desduplica consultas em mais de 70 provedores globais simultaneamente (Google, Bing, DuckDuckGo, Brave, GitHub, Reddit, Wikipedia).
+   * Sem anúncios, sem rastreadores, com saída nativa estruturada em JSON e zero custo de API por requisição.
+2. **Navegação & Bypass Anti-Bot via `ruyijs`:**
+   * Motor C++ headless baseado no Firefox (SpiderMonkey 159 + stack de rede Necko).
+   * Executa SPAs dinâmicas pesadas consumindo apenas **~25 MB a 45 MB de RAM** (contra 250 MB+ de instâncias Chromium).
+   * Evasão nativa contra firewalls anti-bot (Cloudflare Turnstile, Akamai, Datadome) sem os artefatos detectáveis do Chrome DevTools Protocol.
+3. **Limpeza Heurística de Conteúdo via `Trafilatura`:**
+   * Remove automaticamente ruído web: barras de navegação, cabeçalhos, rodapés de copyright, anúncios e caixas de consentimento de cookies.
+   * Converte o artigo/conteúdo central diretamente em Markdown limpo com alta precisão semântica (F1 score > 0.90) em 40 a 70 milissegundos por página.
 
 ---
 
@@ -299,11 +354,68 @@ flowchart TD
 
 ---
 
-## 9. Esquemas de Banco de Dados da Fase 1 (SQLite WAL Mode)
+## 9. Especificação do Git & GitHub VCS MCP Microservice (`:3011`)
 
-O banco de dados central `pipeline.db` operado em modo WAL persiste os dados operacionais dos gateways:
+### 9.1 Tecnologias & Arquitetura
+* **Stack:** Python FastAPI na porta `:3011` integrando operações git locais via Git CLI e sincronização remota com a API oficial do GitHub (REST v3).
+* **Isolamento de Credenciais:** O token pessoal de acesso (`GITHUB_TOKEN`) reside exclusivamente neste microsserviço, sem exposição direta aos agentes da esteira.
+* **Governança de Autoria (Identidade Granular por Agente):**
+  * Cada commit no Git registra com fidelidade o papel do agente responsável pela alteração.
+  * Exemplos de cabeçalho de autor: `Dev Agent <agents+dev@theagency.ai>`, `QA Agent <agents+qa@theagency.ai>`, `Security Agent <agents+security@theagency.ai>`.
 
-### 9.1 Tabela `security_incidents` (Auditoria do Guardrail :3007)
+### 9.2 Endpoints REST & Interface MCP do `git-vcs-gateway` (:3011)
+
+| Método / Interface | Endpoint | Parâmetros de Entrada | Descrição & Resposta |
+| :--- | :--- | :--- | :--- |
+| `GET` (REST) | `/api/v1/health` | Nenhum | Retorna o status de conectividade com a API do GitHub e sanidade da ferramenta git. |
+| `GET` (MCP SSE) | `/sse` | Conexão SSE | Canal de comunicação MCP JSON-RPC 2.0 padrão para operações de versionamento. |
+
+#### Catálogo de Ferramentas MCP Expostas (`tools/list`):
+* **`git_init_repository`**: Inicializa repositório Git local na pasta do workspace do cliente, configurando `.gitignore` e branch padrão (`main`). Parâmetros: `workspace_id` (string).
+* **`git_create_branch`**: Cria e comuta para uma nova branch seguindo o fluxo padronizado da fábrica (ex: `feat/<nome>`, `fix/<nome>`, `test/<nome>`). Parâmetros: `workspace_id` (string), `branch_name` (string).
+* **`git_commit`**: Executa commit das alterações staged validando o formato de Conventional Commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`) e assinando com o autor granular. Parâmetros: `workspace_id` (string), `message` (string), `agent_role` (string, ex: `"dev"`, `"qa"`, `"security"`).
+* **`git_get_diff`**: Retorna as diferenças de código (diff exato unificado) entre o estado de trabalho e o último commit para auditoria de QA e Segurança. Parâmetros: `workspace_id` (string), `staged` (boolean, opcional).
+* **`git_get_status`**: Retorna a lista de arquivos modificados, adicionados ou não rastreados no workspace. Parâmetros: `workspace_id` (string).
+* **`github_create_repo`**: Cria um novo repositório privado na conta/organização de João no GitHub. Parâmetros: `repo_name` (string), `description` (string), `private` (boolean, padrão true).
+* **`github_push`**: Envia os commits locais para o repositório remoto no GitHub autenticado via token seguro. Parâmetros: `workspace_id` (string), `branch_name` (string), `remote_url` (string).
+* **`github_create_pull_request`**: Abre um Pull Request da branch de feature para a branch base (`develop` ou `main`) com sumário técnico das mudanças. Parâmetros: `repo_name` (string), `title` (string), `body` (string), `head_branch` (string), `base_branch` (string).
+
+---
+
+## 10. Especificação do Cloud & Deploy MCP Microservice (`:3012`)
+
+### 10.1 Tecnologias & Arquitetura
+* **Stack:** Python FastAPI na porta `:3012` integrando as APIs oficiais da Vercel (REST Deployments API) e do Supabase (Management API).
+* **Isolamento de Tokens:** `VERCEL_TOKEN`, `VERCEL_TEAM_ID` e `SUPABASE_ACCESS_TOKEN` permanecem estritamente restritos a este microsserviço.
+* **Política Soberana de Governança de Deploys:**
+  1. **Demos de Prospecção (Preview URLs):** Criadas automaticamente e de forma livre para velocidade máxima na abordagem de vendas, gerando senso de posse imediato no lead (ex: `https://demo-<cliente>.vercel.app`).
+  2. **Deploys de Produção Definitiva:** Bloqueados categoricamente por um **Gate Triplo de Conformidade**:
+     * **Gate Financeiro:** Confirmação de 50% de sinal pago e liquidação dos 50% finais via Banco Inter PIX.
+     * **Gate de Qualidade (QA):** 100% dos testes unitários, integração e E2E aprovados pelo QA Agent.
+     * **Gate de Segurança (Security):** Auditoria SAST/Secrets concluída com zero vulnerabilidades críticas.
+     * *Somente quando todos os três gates estiverem cumpridos, o deploy definitivo para o domínio de produção é liberado.*
+
+### 10.2 Endpoints REST & Interface MCP do `deploy-cloud-gateway` (:3012)
+
+| Método / Interface | Endpoint | Parâmetros de Entrada | Descrição & Resposta |
+| :--- | :--- | :--- | :--- |
+| `GET` (REST) | `/api/v1/health` | Nenhum | Retorna o status de conexão com Vercel e Supabase e quotas de uso. |
+| `GET` (MCP SSE) | `/sse` | Conexão SSE | Canal de comunicação MCP JSON-RPC 2.0 padrão para operações de nuvem e deploy. |
+
+#### Catálogo de Ferramentas MCP Expostas (`tools/list`):
+* **`deploy_preview_demo`**: Dispara o build e deploy instantâneo na Vercel para geração da demonstração de vendas, retornando a URL pública da demo. Parâmetros: `workspace_id` (string), `project_name` (string).
+* **`deploy_production`**: Executa o deploy final de produção na Vercel para o domínio oficial do cliente após verificar e validar os 3 Gates de Conformidade no banco de dados. Parâmetros: `workspace_id` (string), `project_name` (string), `lead_id` (inteiro), `custom_domain` (string opcional).
+* **`get_deployment_status`**: Consulta o estado atual do deploy na Vercel (`BUILDING`, `READY`, `ERROR`), tempo de build e logs de compilação. Parâmetros: `deployment_id` (string).
+* **`provision_database`**: Cria um novo banco de dados PostgreSQL serverless gratuito no Supabase para projetos com persistência, gerando e retornando a string de conexão criptografada e chaves públicas. Parâmetros: `project_name` (string), `region` (string, padrão `"sa-east-1"`).
+* **`set_project_env_vars`**: Injeta variáveis de ambiente no projeto da Vercel (`DATABASE_URL`, chaves de API, configs de produção) de forma segura. Parâmetros: `project_name` (string), `env_vars` (objeto chave-valor), `target` (`"preview"` | `"production"`).
+
+---
+
+## 11. Esquemas de Banco de Dados da Fase 1 (SQLite WAL Mode)
+
+O banco de dados central `pipeline.db` operado em modo WAL persiste os dados operacionais de toda a malha de microsserviços:
+
+### 11.1 Tabela `security_incidents` (Auditoria do Guardrail :3007)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `sender_jid` (TEXT, NOT NULL) — Telefone ou identificador do remetente.
 * `raw_message` (TEXT, NOT NULL) — Conteúdo bruto da mensagem inspecionada.
@@ -312,7 +424,7 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `action_taken` (TEXT, NOT NULL) — Ação aplicada (`SILENT_DROP`, `BLOCKED`).
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 
-### 9.2 Tabela `pix_transactions` (Transações do Payment Gateway :3006)
+### 11.2 Tabela `pix_transactions` (Transações do Payment Gateway :3006)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `txid` (TEXT UNIQUE NOT NULL) — Identificador único da transação registrado no BACEN.
 * `lead_id` (INTEGER, NOT NULL) — Identificador do lead associado.
@@ -323,7 +435,7 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 * `paid_at` (TIMESTAMP) — Data e hora exata da liquidação.
 
-### 9.3 Tabela `telegram_audit_logs` (Auditoria do Telegram Gateway :3008)
+### 11.3 Tabela `telegram_audit_logs` (Auditoria do Telegram Gateway :3008)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `direction` (TEXT NOT NULL) — Direção da mensagem (`OUTBOUND_ALERT`, `INBOUND_COMMAND`).
 * `command` (TEXT) — Comando emitido pelo administrador (ex: `/status`, `/pausar`).
@@ -331,11 +443,33 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `status` (TEXT NOT NULL) — Status de entrega ou execução (`SENT`, `EXECUTED`, `REJECTED`).
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 
+### 11.4 Tabela `git_audit_logs` (Auditoria do Git VCS Gateway :3011)
+* `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
+* `workspace_id` (TEXT NOT NULL) — Identificador do projeto.
+* `action` (TEXT NOT NULL) — Ação executada (`COMMIT`, `BRANCH_CREATE`, `PR_CREATE`, `PUSH`).
+* `agent_role` (TEXT NOT NULL) — Papel do agente autor (ex: `dev`, `qa`, `security`).
+* `branch` (TEXT NOT NULL) — Nome da branch afetada.
+* `commit_hash` (TEXT) — Hash SHA do commit gerado.
+* `message` (TEXT) — Mensagem convencional de commit ou título de PR.
+* `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+
+### 11.5 Tabela `deployments` (Auditoria do Cloud & Deploy Gateway :3012)
+* `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
+* `lead_id` (INTEGER NOT NULL) — Identificador do cliente.
+* `workspace_id` (TEXT NOT NULL) — Workspace do projeto.
+* `deployment_type` (TEXT NOT NULL) — Tipo de deploy (`PREVIEW_DEMO`, `PRODUCTION`).
+* `deployment_url` (TEXT NOT NULL) — URL pública gerada na Vercel.
+* `status` (TEXT NOT NULL) — Estado do deploy (`BUILDING`, `READY`, `FAILED`, `BLOCKED_BY_GATE`).
+* `qa_approved` (BOOLEAN DEFAULT FALSE) — Confirmação de testes do QA.
+* `security_approved` (BOOLEAN DEFAULT FALSE) — Confirmação de auditoria de segurança.
+* `payment_cleared` (BOOLEAN DEFAULT FALSE) — Confirmação de liquidação financeira.
+* `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+
 ---
 
-## 10. Matriz Completa de Cenários de Teste & Especificações BDD
+## 12. Matriz Completa de Cenários de Teste & Especificações BDD
 
-### 10.1 Seção A: Matriz Completa de Cenários de Teste dos Microsserviços
+### 12.1 Seção A: Matriz Completa de Cenários de Teste dos Microsserviços
 
 | ID | Dimensão | Microsserviço | Cenário / Condição | Entrada / Parâmetros | Resultado Esperado | Prioridade |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -369,10 +503,22 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 | **TC-128** | Boundary / Edge | `workspace-sandbox-service (:3010)` | Truncamento de buffer de saída em 128 KB | Comando gerando mais de 128 KB de logs no terminal | Saída truncada com segurança em 128 KB com aviso anexado, protegendo a memória do motor. | Alta |
 | **TC-129** | Resilience | `workspace-sandbox-service (:3010)` | Timeout de comando bloqueante (30s) | Comando executando `sleep 60` no container | Processo encerrado com `SIGKILL` aos 30 segundos, devolvendo erro de timeout sem prender a thread. | Alta |
 | **TC-130** | Concurrency | Malha de Microsserviços | Carga concorrente entre múltiplos microsserviços | Disparo simultâneo de mensagens, checagem de guardrail e criação de PIX | Cada microsserviço atende suas requisições de forma independente e isolada, sem contenção de threads. | Alta |
+| **TC-131** | Happy Path | `git-vcs-gateway (:3011)` | Inicialização de repositório e criação de branch | Invocação MCP `git_init_repository` e `git_create_branch` com `feat/vitrine` | Inicializa repositório Git local, cria `.gitignore` e comuta para branch de feature com sucesso. | Alta |
+| **TC-132** | Happy Path | `git-vcs-gateway (:3011)` | Commit convencional com autor granular por agente | Invocação MCP `git_commit` com `agent_role="dev"`, `message="feat: adicionar vitrine"` | Commit registrado no Git log com autor `Dev Agent <agents+dev@theagency.ai>` e mensagem validada. | Alta |
+| **TC-133** | Security | `git-vcs-gateway (:3011)` | Bloqueio de commit com formato de mensagem inválido | Invocação MCP `git_commit` com mensagem sem prefixo convencional | Operação rejeitada pelo linter interno de commits com erro amigável orientando o agente a corrigir. | Média |
+| **TC-134** | Happy Path | `git-vcs-gateway (:3011)` | Criação de repositório privado e abertura de PR | Invocação MCP `github_create_repo` e `github_create_pull_request` | Repositório privado criado na conta de João no GitHub, branch enviada e PR aberto com sucesso. | Alta |
+| **TC-135** | Resilience | `git-vcs-gateway (:3011)` | Falha de rede transitória na API do GitHub | Invocação MCP `github_push` durante queda momentânea de conexão | Gateway retém a transação localmente e aplica retry com backoff exponencial sem perder os commits locais. | Alta |
+| **TC-136** | Happy Path | `deploy-cloud-gateway (:3012)` | Deploy instantâneo de demonstração comercial (Preview) | Invocação MCP `deploy_preview_demo` para lead qualificado | Dispara deploy imediato na Vercel gerando URL pública efêmera ativa para envio no WhatsApp. | Alta |
+| **TC-137** | Happy Path | `deploy-cloud-gateway (:3012)` | Provisionamento de banco PostgreSQL no Supabase | Invocação MCP `provision_database` com `project_name="barbearia-x"` | Provisiona instância gratuita de Postgres no Supabase e retorna connection string criptografada. | Alta |
+| **TC-138** | Security | `deploy-cloud-gateway (:3012)` | Bloqueio de deploy de produção por falta de pagamento | Invocação MCP `deploy_production` com lead sem confirmação de sinal de 50% | Deploy sumariamente bloqueado pelo Gate Financeiro com alerta de violação registrado em auditoria. | Crítica |
+| **TC-139** | Security | `deploy-cloud-gateway (:3012)` | Bloqueio de deploy de produção por reprovação no QA | Invocação MCP `deploy_production` com suíte de testes falhando | Deploy sumariamente bloqueado pelo Gate de QA; lead não avança para produção até resolução dos bugs. | Crítica |
+| **TC-140** | Happy Path | `deploy-cloud-gateway (:3012)` | Deploy de produção aprovado pelo Gate Triplo | Invocação MCP `deploy_production` com 100% de pagamentos, testes verdes e auditoria limpa | Deploy na Vercel executado com sucesso e vinculado ao domínio oficial de produção do cliente. | Alta |
+| **TC-141** | Happy Path | `osint-scraper-gateway (:3009)` | Busca anônima agregada na web via SearXNG | Invocação MCP `search_web` com `query="concorrentes software house campinas"` | Consulta o meta-buscador SearXNG local e retorna lista de resultados consolidados com snippets e URLs em < 800ms. | Alta |
+| **TC-142** | Happy Path | `osint-scraper-gateway (:3009)` | Leitura com bypass anti-bot e extração Markdown | Invocação MCP `fetch_page_markdown` com URL protegida por Cloudflare | Executa via `ruyijs` (SpiderMonkey C++), extrai texto útil sem boilerplate via `Trafilatura` e devolve Markdown limpo consumindo < 45 MB RAM. | Alta |
 
 ---
 
-### 10.2 Seção B: Cenários Críticos em Formato BDD (Gherkin)
+### 12.2 Seção B: Cenários Críticos em Formato BDD (Gherkin)
 
 #### BDD-F1-01: Pareamento e Autonomia do WhatsApp Gateway Microservice (TC-101 & TC-102)
 ```gherkin
@@ -511,9 +657,65 @@ Funcionalidade: Controle Remoto e Alertas no Microsserviço Telegram (:3008)
     E o Telegram deve receber a confirmação "Esteira operacional pausada com sucesso"
 ```
 
+#### BDD-F1-08: Gestão de Branches e Commits Granulares por Agente via Git MCP (:3011)
+```gherkin
+Funcionalidade: Controle de Versão e Identidade Granular por Agente via Git MCP
+  Como arquiteto da esteira autônoma
+  Quero que as operações de git e github registrem com fidelidade qual agente realizou a modificação
+  Para manter auditoria e conformidade total no histórico de versionamento
+
+  Cenário: Commit convencional assinado por agente de desenvolvimento
+    Dado que o "git-vcs-gateway" está ativo na porta 3011 e conectado via SSE ao orquestrador
+    E existem arquivos modificados em um projeto na branch "feat/vitrine-digital"
+    Quando o "engine-core" aciona a ferramenta MCP "git_commit" com:
+      | workspace_id | message                          | agent_role |
+      | ws-barbearia | feat: adicionar catalogo com pix | dev        |
+    Então o commit deve ser gravado no Git local validando o padrão Conventional Commits
+    E o autor do commit no git log deve ser registrado como "Dev Agent <agents+dev@theagency.ai>"
+    E a operação deve ser persistida com sucesso na tabela "git_audit_logs"
+
+  Cenário: Criação de repositório remoto privado e abertura de PR
+    Dado que a branch "feat/vitrine-digital" foi finalizada e testada localmente
+    Quando o "engine-core" aciona a ferramenta MCP "github_create_pull_request"
+    Então o "git-vcs-gateway" deve autenticar na API do GitHub utilizando o GITHUB_TOKEN confinado
+    E deve abrir o Pull Request apontando para a branch "develop" com sumário descritivo das alterações
+    E o identificador do PR deve ser retornado ao orquestrador
+```
+
+#### BDD-F1-09: Deploy Livre de Demos vs Produção com Triplo Gate de Governança (:3012)
+```gherkin
+Funcionalidade: Deploy de Demonstrações Livres vs Produção com Gate Triplo de Governança
+  Como diretor de operações da software house
+  Quero permitir deploys instantâneos de demos para prospecção mas blindar o deploy de produção
+  Para garantir que nenhum software suba para domínio oficial sem pagamento e testes 100% aprovados
+
+  Cenário: Deploy instantâneo e autônomo de demo de prospecção
+    Dado que o agente construtor de demos finalizou o protótipo para uma clínica
+    Quando o "engine-core" invoca a ferramenta MCP "deploy_preview_demo" no servidor :3012
+    Então o deploy na Vercel deve ser disparado imediatamente sem exigência de pagamento prévio
+    E uma URL pública efêmera (ex: "https://demo-clinica-sorriso.vercel.app") deve ser gerada
+    E a transação de deploy deve ser salva com status "READY" e tipo "PREVIEW_DEMO" na tabela "deployments"
+
+  Cenário: Bloqueio sumário de deploy de produção por falta de aprovação no Gate Triplo
+    Dado que um projeto está finalizado mas o cliente ainda não quitou os 50% de saldo final
+    Quando o orquestrador tenta invocar a ferramenta MCP "deploy_production"
+    Então o "deploy-cloud-gateway" deve checar a tabela "pix_transactions" e detectar pagamento pendente
+    E o deploy para produção deve ser categoricamente bloqueado
+    E a tabela "deployments" deve registrar o evento como "BLOCKED_BY_GATE"
+    E um alerta de tentativa de deploy sem conformidade financeira deve ser despachado para o Telegram de João
+
+  Cenário: Liberação de deploy de produção com conformidade plena
+    Dado que o sinal e o saldo final de 50% foram liquidados no Banco Inter
+    E 100% dos testes da suíte de QA foram aprovados pelo QA Agent
+    E a auditoria de segurança foi concluída sem vulnerabilidades críticas
+    Quando a ferramenta MCP "deploy_production" é acionada
+    Então o build de produção deve ser executado e associado ao domínio oficial do cliente na Vercel
+    E a tabela "deployments" deve registrar o status como "READY" com as três confirmações aprovadas
+```
+
 ---
 
-## 7. Segurança de Borda & Remediações Arquiteturais Herdadas da Auditoria (Fase 1)
+## 13. Segurança de Borda & Remediações Arquiteturais Herdadas da Auditoria (Fase 1)
 
 > [!IMPORTANT]
 > **Origem dos Requisitos:** Esta seção formaliza a alocação e especificação dos achados da auditoria de segurança da Fase 0 (`audits/REPORT.md`, `audits/FINDINGS-DETAIL.md` e `audits/NEEDS-VALIDATION.md`) cujo tratamento arquitetural pertence legitimamente à camada de borda e gateways desacoplados da Fase 1.
