@@ -577,6 +577,10 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 | **TC-144** | Resilience | `osint-scraper-gateway (:3009)` | Detecção de sessão de rede social expirada | Cookie de sessão do Instagram revogado ou expirado | Detecta redirecionamento para login, marca cookie como inválido, notifica João via Telegram e cancela coleta sem travar o worker. | Alta |
 | **TC-145** | Happy Path | `payment-gateway (:3006)` | Consulta de saldo consolidado em tempo real via Banking v2 | Invocação MCP `get_account_balance` | Autentica via mTLS com escopo `extrato.read`, consulta `GET /banking/v2/saldo` e retorna valores de saldo disponível, bloqueado e limite em < 600ms. | Alta |
 | **TC-146** | Happy Path | `payment-gateway (:3006)` | Consolidação de métricas de faturamento por período | Invocação MCP `get_billing_metrics` com `start_date="2026-11-01"`, `end_date="2026-11-30"` | Consulta extrato oficial, consolida créditos recebidos, calcula faturamento bruto e ticket médio sem expor credenciais bancárias. | Alta |
+| **TC-147** | Resilience | `engine-core (:8000)` | Ativação de Pausa Emergencial (Fail-Fast) por queda de gateway crítico | Healthcheck de gateway crítico (`whatsapp`, `payment` ou `guardrail`) retorna `unhealthy` | Orquestrador suspende imediatamente abordagens ativas, congela filas comerciais e despacha alerta de emergência no Telegram de João. | Crítica |
+| **TC-148** | Resilience | `engine-core (:8000)` | Auto-retomada da esteira após recuperação de saúde | Gateway crítico recuperado pelo Docker transiciona de volta para `healthy` | Orquestrador detecta restauração no loop de 5s, retoma as filas operacionais e envia notificação de normalização no Telegram. | Alta |
+| **TC-149** | Observability | Stack Grafana Loki | Coleta e indexação de logs unificados dos microsserviços | Containers gravando logs estruturados JSON no stdout | Promtail captura logs de todos os 8 microsserviços e disponibiliza para busca e dashboards no Grafana (:3001) e Loki (:3100). | Alta |
+| **TC-150** | Security | `workspace-sandbox-service (:3010)` | Execução de sandbox efêmera via DooD seguro | Invocação MCP `run_terminal_command` montando `/var/run/docker.sock` | Container cria contêiner irmão `node:20-slim` com limites estritos (2GB RAM, 1.5 CPUs, rede desabilitada) e o destrói ao finalizar. | Crítica |
 
 ---
 
@@ -775,6 +779,29 @@ Funcionalidade: Deploy de Demonstrações Livres vs Produção com Gate Triplo d
     E a tabela "deployments" deve registrar o status como "READY" com as três confirmações aprovadas
 ```
 
+#### BDD-F1-10: Resiliência Fail-Fast e Auto-Retomada da Esteira Operacional (TC-147 & TC-148)
+```gherkin
+Funcionalidade: Fail-Fast e Auto-Recuperação de Gateways Críticos
+  Como guardião de resiliência e estabilidade da software house
+  Quero que a esteira pause imediatamente abordagens ativas se um gateway essencial cair
+  E retome as operações de forma autônoma assim que o container for recuperado pelo Docker
+
+  Cenário: Pausa emergencial imediata por instabilidade no WhatsApp Gateway
+    Dado que a esteira está executando disparos e negociações com clientes
+    Quando o healthcheck do microsserviço "whatsapp-gateway" (:3005) transiciona para "unhealthy"
+    Então o "engine-core" deve acionar o estado de "PAUSA_EMERGENCIAL"
+    E novos disparos de mensagens e abordagens de leads devem ser suspensos imediatamente
+    E uma notificação de alerta crítico com botões de ação deve ser enviada para o Telegram de João
+
+  Cenário: Auto-retomada autônoma da operação após recuperação pelo Docker
+    Dado que a esteira está em estado de "PAUSA_EMERGENCIAL" devido a falha no gateway de pagamento
+    Quando o container Docker do "payment-gateway" é reiniciado e seu healthcheck retorna "healthy"
+    Então a checagem periódica de 5 segundos do "engine-core" deve detectar a normalização
+    E o status da esteira deve transicionar de volta para "OPERACIONAL"
+    E a fila de tarefas e negociações suspensas deve ser retomada automaticamente
+    E uma notificação de sucesso deve ser despachada para o Telegram de João confirmando a volta
+```
+
 ---
 
 ## 13. Segurança de Borda & Remediações Arquiteturais Herdadas da Auditoria (Fase 1)
@@ -782,7 +809,7 @@ Funcionalidade: Deploy de Demonstrações Livres vs Produção com Gate Triplo d
 > [!IMPORTANT]
 > **Origem dos Requisitos:** Esta seção formaliza a alocação e especificação dos achados da auditoria de segurança da Fase 0 (`audits/REPORT.md`, `audits/FINDINGS-DETAIL.md` e `audits/NEEDS-VALIDATION.md`) cujo tratamento arquitetural pertence legitimamente à camada de borda e gateways desacoplados da Fase 1.
 
-### 7.1 SEC-009: Inspeção Semântica Profunda de Injeção de Prompt & Jailbreak (`guardrail-gateway :3007`)
+### 13.1 SEC-009: Inspeção Semântica Profunda de Injeção de Prompt & Jailbreak (`guardrail-gateway :3007`)
 * **Contexto de Borda:** Na Fase 0, mensagens de ferramentas locais foram envelopadas com tags estruturais (`<untrusted_content>`). No entanto, a interação com clientes desconhecidos via WhatsApp, Telegram e formulários web expõe o sistema a ataques adversariais complexos (Prompt Injection indireto, Jailbreaks, System Prompt Extraction e Command Hijacking).
 * **Especificação Soberana do Gateway de Guardrail:**
   1. **Inspeção Síncrona Obrigatória:** Nenhuma mensagem externa atinge o `engine-core` sem validação prévia pelo `guardrail-gateway (:3007)`.
@@ -790,7 +817,7 @@ Funcionalidade: Deploy de Demonstrações Livres vs Produção com Gate Triplo d
   3. **Categorias Monitoradas:** Violações de segurança, tentativas de forçar personas desautorizadas, injeção de instruções de sistema e tentativa de extração de credenciais.
   4. **Ação de Bloqueio:** Mensagens classificadas como maliciosas são descartadas na borda, registrando evento em log de segurança e devolvendo resposta neutra de desvio ao remetente, sem consumir tokens do modelo cognitivo principal.
 
-### 7.2 SEC-021: Barramento AMQP Distribuído e Validação Rígida de Payloads (RabbitMQ)
+### 13.2 SEC-021: Barramento AMQP Distribuído e Validação Rígida de Payloads (RabbitMQ)
 * **Contexto de Borda:** O RabbitMQ (introduzido na Fase 0 para fila local de tarefas) é expandido na Fase 1 para se tornar o **barramento central de mensageria assíncrona** entre todos os microsserviços e gateways.
 * **Topologia de Exchanges e Queues AMQP:**
   * **Exchange Principal:** `agency.topic` (Topic Exchange durável).
@@ -810,7 +837,7 @@ Funcionalidade: Deploy de Demonstrações Livres vs Produção com Gate Triplo d
     * `timestamp`: ISO 8601 UTC
     * `payload`: JSON com teto rígido de **64 KB**. Mensagens excedentes são rejeitadas com erro de validação.
 
-### 7.3 SEC-NV-001: Arquitetura de Reverse Proxy & Ingress Rate Limiting
+### 13.3 SEC-NV-001: Arquitetura de Reverse Proxy & Ingress Rate Limiting
 * **Contexto de Borda:** Em conformidade com o apontamento `audits/NEEDS-VALIDATION.md`, os servidores Uvicorn e Express da esteira nunca devem ser expostos diretamente à internet pública.
 * **Arquitetura de Ingress de Produção:**
   1. **Proxy Reverso Unificado:** Nginx / Cloudflare WAF à frente das portas `:8000`, `:3005`, `:3006`, `:3007`, `:3008`, `:3009` e `:3010`.
@@ -820,9 +847,49 @@ Funcionalidade: Deploy de Demonstrações Livres vs Produção com Gate Triplo d
      * Endpoints de orquestração interna (`/api/v1/agent/run`): acesso bloqueado da internet pública, restrito à rede interna / VPN.
   3. **Mitigação Anti-DDoS e WAF:** Bloqueio na borda de scanners de vulnerabilidades (SQLi, XSS, Path Traversal) antes de alcançar qualquer código de aplicação.
 
-### 7.4 Desacoplamento das Ferramentas Locais para o Servidor MCP Dedicado (:3010)
+### 13.4 Desacoplamento das Ferramentas Locais para o Servidor MCP Dedicado (:3010)
 * **Transição Arquitetural da Fase 0 para a Fase 1:**
   * Na Fase 0, `read_file`, `write_file`, `patch_file`, `list_directory` e `run_terminal_command` foram implementados embutidos no processo Python do `services/engine`.
   * Na Fase 1, essas ferramentas são **completamente migradas e desacopladas** para o microsserviço autônomo **`workspace-sandbox-service` (Porta `:3010`)**.
   * O `engine-core` elimina o código nativo de filesystem e executa essas ações estritamente como **MCP Client** via JSON-RPC 2.0 SSE, isolando o processo orquestrador do daemon Docker e do sistema de arquivos local.
+
+---
+
+## 14. Orquestração, Observabilidade & Políticas de Fail-Safe da Fase 1
+
+### 14.1 Arquitetura Docker Compose & Rede Bridge Unificada (`agency-network`)
+A suíte inteira de microsserviços sobe orquestrada via Docker Compose com isolamento de rede e DNS interno:
+* **Rede Interna:** Driver bridge `agency-network`. Cada contêiner descobre os pares pelo hostname oficial do serviço (ex: `http://whatsapp-gateway:3005`, `http://payment-gateway:3006`, `http://guardrail-gateway:3007`).
+* **Mapeamento de Portas:** Todas as portas (`:3005` a `:3012`, `:8000`, `:3001`, `:8888`) são mapeadas para `localhost` apenas para inspeção de desenvolvimento e reverse proxy.
+* **Políticas de Reinício:** Todos os contêineres rodam com `restart: unless-stopped`.
+* **Healthchecks Ativos:** Cada microsserviço define checagem periódica (`/health` a cada 10s com timeout de 3s e 3 retries). Se o processo travar ou vazar memória, o Docker restarta o contêiner automaticamente.
+
+### 14.2 Stack de Observabilidade Grafana + Loki (`:3001` e `:3100`)
+Para monitorar a saúde, consumo de recursos e fluxo de requisições sem inspecionar múltiplos terminais:
+* **Loki (`:3100`):** Armazena e indexa logs de todos os 8 microsserviços e do `engine-core`.
+* **Promtail:** Agente daemon que coleta automaticamente o stdout/stderr de todos os contêineres Docker, injetando labels estruturadas (`service="whatsapp"`, `service="payment"`, `level="error"`, `correlation_id`).
+* **Grafana (`:3001`):** Interface visual unificada com dashboards pré-configurados:
+  * Visão geral de latência de cada endpoint REST e ferramenta MCP.
+  * Consumo de CPU e RAM por microsserviço.
+  * Live tail de logs com filtro rápido por `correlation_id` e `lead_id`.
+
+### 14.3 Política Fail-Fast & Recuperação Automática de Gateways Críticos
+Quando um gateway essencial apresenta instabilidade, a segurança operacional da software house prevalece sobre a continuidade:
+* **Gateways Críticos Monitorados:** `whatsapp-gateway` (:3005), `payment-gateway` (:3006) e `guardrail-gateway` (:3007).
+* **Ativação do Fail-Fast (Pausa Geral):** Se qualquer um dos 3 gateways críticos falhar consecutivamente no healthcheck ou retornar status `unhealthy`:
+  1. O `engine-core` aciona o estado de **Pausa Emergencial**.
+  2. Todas as abordagens ativas no WhatsApp, prospecções frias e negociações são suspensas instantaneamente para evitar mensagens quebradas ou falhas de cobrança.
+  3. O `telegram-gateway` (:3008) despacha alerta vermelho com prioridade máxima para João detalhando o microsserviço causador e o motivo da queda.
+* **Auto-Retomada Automática:** O `engine-core` mantém um loop de sondagem a cada 5 segundos. Assim que o contêiner Docker recupera o serviço e o healthcheck retorna `healthy`:
+  1. A esteira retoma automaticamente a operação das filas pausadas sem necessidade de comando manual.
+  2. Um alerta verde é despachado para o Telegram de João: *"✅ Serviço [nome] restabelecido. Esteira operacional retomada com sucesso."*
+
+### 14.4 Sandbox Docker DooD (Docker-outside-of-Docker via `/var/run/docker.sock`)
+O microsserviço `workspace-sandbox-service` (:3010) adota o padrão **Docker-outside-of-Docker (DooD)**:
+* **Socket Montado:** Monta o socket do host (`/var/run/docker.sock`) em modo restrito dentro do contêiner `:3010`.
+* **Criação de Contêineres Irmãos:** Quando um agente de desenvolvimento compila código ou roda testes unitários (`npm test`), o microsserviço cria contêineres efêmeros irmãos (`node:20-slim`) diretamente no daemon do host.
+* **Vantagens Operacionais:**
+  * **Segurança Reforçada:** Dispensa a flag perigosa `--privileged` exigida pelo Docker-in-Docker tradicional.
+  * **Performance & Cache:** Compartilha o cache de imagens do host, acelerando a inicialização de containers efêmeros para menos de 300ms.
+  * **Isolamento Estrito:** Os contêineres efêmeros montam apenas o diretório do workspace do cliente, rodam sem acesso à rede externa e são destruídos com flag `--rm` imediatamente após a execução.
 

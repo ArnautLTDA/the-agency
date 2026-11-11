@@ -96,6 +96,11 @@ Criação e padronização de todos os sentidos, braços operacionais e ferramen
 * **1.7 Cloud & Deploy MCP Server (`:3012`):**
   * Microsserviço isolado integrando Vercel REST API e Supabase Management API.
   * Expõe **Servidor MCP via SSE** com ferramentas: `deploy_preview_demo` (demos comerciais livres com URLs públicas instantâneas), `deploy_production` (gate triplo estrito: 50%+50% PIX pago, QA 100% verde e auditoria de segurança limpa), `provision_database` (Postgres Supabase) e `set_project_env_vars`.
+* **1.8 Orquestração, Observabilidade & Políticas de Fail-Safe:**
+  * Docker Compose unificado com rede interna bridge `agency-network`, DNS interno e healthchecks com auto-restart.
+  * Stack de observabilidade Grafana (`:3001`) + Loki (`:3100`) + Promtail coletando logs estruturados JSON de todos os contêineres com dashboards pré-configurados.
+  * Política Fail-Fast com Pausa Emergencial imediata por queda de gateways críticos (`whatsapp`, `payment`, `guardrail`) e Auto-Retomada automática a cada 5s ao recuperar status `healthy`.
+  * Sandbox Docker efêmero via DooD (`/var/run/docker.sock`) garantindo isolamento sem privilégios root de DinD.
 
 ---
 
