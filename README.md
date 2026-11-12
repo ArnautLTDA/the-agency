@@ -28,6 +28,7 @@ the-agency/
 ├── workspaces/              # Sandboxes isolados onde os projetos de clientes são programados
 │   └── clients/             # /home/joao/projetos/<client-slug>/
 ├── database/                # SQLite local (pipeline.db) + Migrações
+├── knowledge/               # Knowledge-as-Code: Playbooks Markdown (dev, sales, qa, c_suite)
 └── docs/                    # Especificações e Documentação Técnica Detalhada
 ```
 
@@ -102,7 +103,8 @@ Criação e padronização de todos os sentidos, braços operacionais e ferramen
   * Banco vetorial **Qdrant** em Docker (`:6333`) com isolamento multi-tenant por agente (`private`), agência (`shared`) e projeto (`project`).
   * Motor de embeddings local **FastEmbed** (ONNX Runtime em CPU, ~90MB RAM, BGE-M3 com suporte nativo a português e custo R$ 0,00).
   * Juiz discriminativo **BGE-Reranker-v2-M3** (BAAI - China) avaliando relevância em 15ms: respostas locais de alta confiança (`>= 0.80`) entregues em <25ms; baixa confiança (`< 0.50`) aciona fallback em tempo real para o SearXNG (`:3009`) com extração de *Knowledge Strips*.
-  * Expõe **Servidor MCP via SSE** com ferramentas: `recall`, `remember`, `forget` e `get_project_context`.
+  * Expõe **Servidor MCP via SSE** com ferramentas: `recall`, `remember`, `forget`, `ingest_document` e `get_project_context`.
+  * Ingestão automatizada no boot via padrão **Knowledge-as-Code** (diretório raiz `knowledge/` fatiado semanticamente em <3s com validação de hashes MD5).
 * **1.9 Orquestração, Observabilidade & Políticas de Fail-Safe:**
   * Docker Compose unificado com rede interna bridge `agency-network`, DNS interno e healthchecks com auto-restart.
   * Stack de observabilidade Grafana (`:3001`) + Loki (`:3100`) + Promtail coletando logs estruturados JSON de todos os 9 contêineres com dashboards pré-configurados.

@@ -39,7 +39,7 @@ A esteira consolida toda a sua malha operacional em 9 servidores MCP desacoplado
 | **`workspace-sandbox-service`** | `:3010` | **Workspace MCP Server** (Python / Docker) | `read_file`, `write_file`, `patch_file`, `list_directory`, `run_terminal_command` em container efêmero. |
 | **`git-vcs-gateway`** | `:3011` | **Git & GitHub VCS MCP Server** (Python FastAPI) | `git_init_repository`, `git_create_branch`, `git_commit` (com autor granular por agente), `git_get_diff`, `git_get_status`, `github_create_repo`, `github_push`, `github_create_pull_request`. |
 | **`deploy-cloud-gateway`** | `:3012` | **Cloud & Deploy MCP Server** (Python FastAPI) | `deploy_preview_demo` (demos livres Vercel), `deploy_production` (gate de QA + Segurança + PIX pago), `get_deployment_status`, `provision_database` (Supabase Postgres), `set_project_env_vars`. |
-| **`knowledge-memory-gateway`** | `:3013` | **Knowledge, Memory & CRAG MCP Server** (Python FastAPI) | `recall`, `remember`, `forget`, `get_project_context`. Qdrant (:6333) + FastEmbed BGE + BGE-Reranker-v2-m3 (CRAG com fallback SearXNG :3009). |
+| **`knowledge-memory-gateway`** | `:3013` | **Knowledge, Memory & CRAG MCP Server** (Python FastAPI) | `recall`, `remember`, `forget`, `ingest_document`, `get_project_context`. Qdrant (:6333) + FastEmbed BGE + BGE-Reranker-v2-m3 (CRAG com fallback SearXNG :3009). |
 
 ### Diagrama de Comunicação MCP:
 
@@ -569,6 +569,12 @@ flowchart TD
     * `memory_id` (string, obrigatório): UUID do vetor no Qdrant.
     * `scope` (string, obrigatório): Escopo de permissão.
     * `namespace` (string, opcional): Validado automaticamente contra o papel do agente chamador.
+* **`ingest_document`**: Realiza a leitura e ingestão completa de um arquivo Markdown ou texto técnico, aplicando chunking semântico por cabeçalhos (`#`, `##`, `###`), gerando embeddings locais via FastEmbed e indexando os blocos no Qdrant com escopo e tags.
+  * **Parâmetros (`inputSchema`):**
+    * `file_path` (string, obrigatório): Caminho do arquivo a ser ingerido (ex: `"knowledge/dev/nextjs-patterns.md"`).
+    * `scope` (string, opcional, padrão `"private"`): Escopo (`"private"`, `"shared"`, `"project"`).
+    * `namespace` (string, opcional): Namespace de destino (injetado automaticamente se omitido).
+    * `tags` (array de strings, opcional): Marcadores semânticos para o documento.
 * **`get_project_context`**: Consolida todas as memórias técnicas, arquiteturais e regras de negócio associadas a um projeto/cliente específico para inicialização de contexto de agentes.
   * **Parâmetros (`inputSchema`):**
     * `client_slug` (string, obrigatório): Slug do cliente no SQLite.
@@ -609,13 +615,47 @@ O microsserviço `:3013` traduz o escopo em filtros booleanos rígidos no Qdrant
 * **Se `scope == "shared"`:** Filtra por `scope == "shared"`. Retorna diretrizes globais da software house acessíveis a todos os agentes.
 * **Se `scope == "project"`:** Filtra por `project_slug == X-Project-Slug`. Retorna o contexto unificado daquele projeto de cliente, acessível a qualquer agente alocado naquela entrega.
 
+### 11.5 Mecanismo de Inicialização & Ingestão: Knowledge-as-Code (`knowledge/`)
+
+#### 1. Estrutura de Diretórios Versionada no Repositório Git:
+O conhecimento prévio da agência reside na pasta raiz `knowledge/`, permitindo versionamento, auditoria e edição transparente em Markdown:
+```text
+knowledge/
+├── dev/                     # Playbooks e padrões técnicos de desenvolvimento
+│   ├── nextjs-15-patterns.md
+│   ├── supabase-auth-template.md
+│   └── tailwind-conventions.md
+├── sales/                   # Scripts e quebras de objeção comercial
+│   ├── whatsapp-objections.md
+│   ├── pricing-and-margins.md
+│   └── cold-outreach-scripts.md
+├── qa/                      # Diretrizes de testes e segurança
+│   ├── security-checklist.md
+│   └── edge-cases-inventory.md
+└── c_suite/                 # Regras de negócio e governança executiva
+    └── agency-governance-rules.md
+```
+
+#### 2. Boot-Time Automated Seeding:
+* Na inicialização do contêiner `knowledge-memory-gateway` (:3013), o serviço consulta a coleção do Qdrant (:6333).
+* Se a coleção estiver vazia (`points_count == 0`), dispara automaticamente a varredura completa da pasta `knowledge/`.
+* Os arquivos são lidos, fatiados e indexados via FastEmbed em **menos de 3 segundos**, fazendo a agência nascer 100% calibrada no primeiro boot.
+
+#### 3. Rastreamento Incremental via Hash MD5:
+* Para sincronizações posteriores, o serviço armazena os hashes MD5 dos arquivos em `.engine/data/knowledge_hashes.json`.
+* Ao executar o script `python services/memory/seed.py` ou enviar o comando `/seed-knowledge` no Telegram, apenas os arquivos modificados ou novos são reindexados, garantindo idempotência e performance.
+
+#### 4. Chunking Semântico por Cabeçalhos Markdown:
+* Em vez de quebras arbitrárias por quantidade de caracteres (que cortam funções e frases no meio), o fatiador respeita a estrutura hierárquica do Markdown (`#`, `##`, `###`).
+* Cada seção com seu título e subtítulo vira um *Knowledge Chunk* autocontido, preservando a coerência semântica para o modelo vetorial e para o juiz BGE-Reranker.
+
 ---
 
 ## 12. Esquemas de Banco de Dados da Fase 1 (SQLite WAL Mode)
 
 O banco de dados central `pipeline.db` operado em modo WAL persiste os dados operacionais de toda a malha de microsserviços:
 
-### 11.1 Tabela `security_incidents` (Auditoria do Guardrail :3007)
+### 12.1 Tabela `security_incidents` (Auditoria do Guardrail :3007)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `sender_jid` (TEXT, NOT NULL) — Telefone ou identificador do remetente.
 * `raw_message` (TEXT, NOT NULL) — Conteúdo bruto da mensagem inspecionada.
@@ -624,7 +664,7 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `action_taken` (TEXT, NOT NULL) — Ação aplicada (`SILENT_DROP`, `BLOCKED`).
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 
-### 11.2 Tabela `pix_transactions` (Transações do Payment Gateway :3006)
+### 12.2 Tabela `pix_transactions` (Transações do Payment Gateway :3006)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `txid` (TEXT UNIQUE NOT NULL) — Identificador único da transação registrado no BACEN.
 * `lead_id` (INTEGER, NOT NULL) — Identificador do lead associado.
@@ -635,7 +675,7 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 * `paid_at` (TIMESTAMP) — Data e hora exata da liquidação.
 
-### 11.3 Tabela `telegram_audit_logs` (Auditoria do Telegram Gateway :3008)
+### 12.3 Tabela `telegram_audit_logs` (Auditoria do Telegram Gateway :3008)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `direction` (TEXT NOT NULL) — Direção da mensagem (`OUTBOUND_ALERT`, `INBOUND_COMMAND`).
 * `command` (TEXT) — Comando emitido pelo administrador (ex: `/status`, `/pausar`).
@@ -643,7 +683,7 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `status` (TEXT NOT NULL) — Status de entrega ou execução (`SENT`, `EXECUTED`, `REJECTED`).
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 
-### 11.4 Tabela `git_audit_logs` (Auditoria do Git VCS Gateway :3011)
+### 12.4 Tabela `git_audit_logs` (Auditoria do Git VCS Gateway :3011)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `workspace_id` (TEXT NOT NULL) — Identificador do projeto.
 * `action` (TEXT NOT NULL) — Ação executada (`COMMIT`, `BRANCH_CREATE`, `PR_CREATE`, `PUSH`).
@@ -653,7 +693,7 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `message` (TEXT) — Mensagem convencional de commit ou título de PR.
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 
-### 11.5 Tabela `deployments` (Auditoria do Cloud & Deploy Gateway :3012)
+### 12.5 Tabela `deployments` (Auditoria do Cloud & Deploy Gateway :3012)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `lead_id` (INTEGER NOT NULL) — Identificador do cliente.
 * `workspace_id` (TEXT NOT NULL) — Workspace do projeto.
@@ -728,6 +768,8 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 | **TC-153** | Happy Path | `knowledge-memory-gateway (:3013)` | Indexação e auto-aprendizado semântico | Invocação MCP `remember` com nova solução de bug e tags técnicas | FastEmbed gera embeddings vetoriais locais em < 15ms em CPU e persiste no Qdrant com isolamento por namespace sem custos de LLM. | Alta |
 | **TC-154** | Security | `knowledge-memory-gateway (:3013)` | Isolamento estrito de namespace entre agentes (Multi-Tenancy) | Agente `cro` tentando acessar namespace privado `dev` | Qdrant aplica Payload Filter estrito, bloqueando vazamento de dados entre personas de agentes. | Crítica |
 | **TC-155** | Resilience | `knowledge-memory-gateway (:3013)` | Tratamento de termo não localizado nem na web | Invocação MCP `recall` com busca obscura sem resultados válidos nem na web | BGE-Reranker avalia resultados da web com score < 0.50 e retorna `{"found": false}` de forma determinística sem alucinar. | Alta |
+| **TC-156** | Happy Path | `knowledge-memory-gateway (:3013)` | Ingestão em lote de Knowledge-as-Code no primeiro boot | Qdrant vazio na inicialização do microsserviço | Lê diretório `knowledge/`, realiza chunking semântico por cabeçalhos `#`/`##`, gera embeddings FastEmbed e indexa playbooks no Qdrant em < 3s. | Alta |
+| **TC-157** | Happy Path | `knowledge-memory-gateway (:3013)` | Ingestão dinâmica de documento técnico via ferramenta MCP | Invocação MCP `ingest_document` com `file_path="knowledge/dev/nextjs-patterns.md"` | Fatiador divide o arquivo em blocos autocontidos, valida integridade MD5 e persiste os vetores no namespace correspondente sem chamadas de LLM. | Alta |
 
 ---
 
