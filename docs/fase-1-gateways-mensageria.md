@@ -26,7 +26,7 @@ Apenas especificações arquiteturais, regras e contratos conceituais (zero cód
 
 ## 2. Topologia Geral de Servidores MCP & Portas (A Caixa 100% Fechada)
 
-A esteira consolida toda a sua malha operacional em 8 servidores MCP desacoplados e independentes:
+A esteira consolida toda a sua malha operacional em 9 servidores MCP desacoplados e independentes:
 
 | Serviço / Microsserviço | Porta Local | Papel na Arquitetura MCP | Ferramentas MCP Expostas (`tools/list`) |
 | :--- | :--- | :--- | :--- |
@@ -39,6 +39,7 @@ A esteira consolida toda a sua malha operacional em 8 servidores MCP desacoplado
 | **`workspace-sandbox-service`** | `:3010` | **Workspace MCP Server** (Python / Docker) | `read_file`, `write_file`, `patch_file`, `list_directory`, `run_terminal_command` em container efêmero. |
 | **`git-vcs-gateway`** | `:3011` | **Git & GitHub VCS MCP Server** (Python FastAPI) | `git_init_repository`, `git_create_branch`, `git_commit` (com autor granular por agente), `git_get_diff`, `git_get_status`, `github_create_repo`, `github_push`, `github_create_pull_request`. |
 | **`deploy-cloud-gateway`** | `:3012` | **Cloud & Deploy MCP Server** (Python FastAPI) | `deploy_preview_demo` (demos livres Vercel), `deploy_production` (gate de QA + Segurança + PIX pago), `get_deployment_status`, `provision_database` (Supabase Postgres), `set_project_env_vars`. |
+| **`knowledge-memory-gateway`** | `:3013` | **Knowledge, Memory & CRAG MCP Server** (Python FastAPI) | `recall`, `remember`, `forget`, `get_project_context`. Qdrant (:6333) + FastEmbed BGE + BGE-Reranker-v2-m3 (CRAG com fallback SearXNG :3009). |
 
 ### Diagrama de Comunicação MCP:
 
@@ -62,6 +63,11 @@ flowchart TD
         SANDBOX_SVC["workspace-sandbox-service (:3010)<br/>Docker Daemon + Workspace MCP Server"]
         GIT_SVC["git-vcs-gateway (:3011)<br/>FastAPI + Git/GitHub VCS MCP Server"]
         DEPLOY_SVC["deploy-cloud-gateway (:3012)<br/>FastAPI + Vercel/Supabase Deploy MCP Server"]
+        KNOW_SVC["knowledge-memory-gateway (:3013)<br/>Qdrant + FastEmbed + BGE CRAG MCP Server"]
+    end
+
+    subgraph Armazenamento_Vetorial["Base Vetorial & Memória"]
+        QDRANT_STORE[("Qdrant Vector Store (:6333)<br/>Multi-Tenant Collections")]
     end
 
     subgraph Orquestrador["Núcleo Orquestrador Central"]
@@ -77,6 +83,11 @@ flowchart TD
     CORE <-->|MCP JSON-RPC via SSE| SANDBOX_SVC
     CORE <-->|MCP JSON-RPC via SSE| GIT_SVC
     CORE <-->|MCP JSON-RPC via SSE| DEPLOY_SVC
+    CORE <-->|MCP JSON-RPC via SSE| KNOW_SVC
+
+    %% Knowledge & CRAG Flow
+    KNOW_SVC <-->|Embeddings & Busca Vetorial| QDRANT_STORE
+    KNOW_SVC -.->|CRAG Web Fallback em Baixa Confiança| OSINT_SVC
 
     %% Ingress Flow
     WPP <-->|WebSocket Criptografado| WPP_SVC
@@ -469,7 +480,102 @@ Para evitar que agentes sofram bloqueios de 2FA (SMS/Authenticator), captchas in
 
 ---
 
-## 11. Esquemas de Banco de Dados da Fase 1 (SQLite WAL Mode)
+## 11. Especificação do Knowledge, Memory & Corrective RAG (CRAG) Microservice (`:3013`)
+
+### 11.1 Arquitetura & O Dilema da Memória de Agentes
+O microsserviço `knowledge-memory-gateway` opera na porta `:3013` e atua como o **Cérebro de Longo Prazo, Base de Conhecimento Técnico e Motor de Corrective RAG (CRAG)** de toda a software house.
+
+#### Princípios Arquiteturais Chave:
+1. **Descarte Consciente de Abstrações Lentas (Sem Mem0):**
+   * Sistemas genéricos de memória como o Mem0 realizam chamadas ocultas a LLMs a cada gravação para extrair entidades, gerando latências de 1 a 2 segundos e queimando tokens de sistema desnecessariamente.
+   * Na agência, fatos operacionais e comerciais (telefones, dados de clientes, transações, status de deploys) já são gravados de forma determinística no **SQLite WAL (`pipeline.db`)**.
+   * O microsserviço `:3013` foca estritamente em **conhecimento técnico, playbooks de vendas, templates de código, padrões arquiteturais e soluções de erros passados**, operando com gravação direta em **sub-15 milissegundos**.
+2. **Armazenamento Vetorial de Alta Performance via Qdrant (`:6333`):**
+   * Contêiner Docker oficial em Rust com pegada levíssima (~35 MB de RAM).
+   * **Multi-Tenancy por Payload Filtering:** Separação lógica rígida entre agentes (`scope` e `namespace`) sem necessidade de múltiplos clusters ou instâncias.
+3. **Motor Local de Embeddings via FastEmbed (ONNX Runtime):**
+   * Elimina o peso do PyTorch (reduzindo a imagem Docker de 4 GB para ~200 MB) e roda inferência local em CPU em ~10ms a 15ms.
+   * Modelo: `BGE-M3` / `bge-small-en-v1.5` da BAAI com suporte a português, busca densa e sparse. Custo R$ 0,00.
+4. **O Juiz Discriminativo de CRAG (BGE-Reranker-v2-M3):**
+   * Cross-Encoder discriminativo não-autoregressivo da BAAI (China), líder do benchmark MTEB.
+   * Não gera texto: avalia o par `(pergunta, documento)` em matriz única em **12ms a 25ms** em CPU local, emitindo um score calibrado de confiança de `0.00` a `1.00`.
+
+### 11.2 O Pipeline de Corrective RAG (CRAG) com Fallback Web
+O microsserviço implementa o ciclo completo de Corrective RAG com autocura e aprendizado contínuo:
+
+```mermaid
+flowchart TD
+    AGENT["Agente ReAct (:8000)"] -->|1. recall(query, scope, namespace)| CRAG_SVC["knowledge-memory-gateway (:3013)"]
+    CRAG_SVC -->|2. Busca Vetorial (5ms)| QDRANT[("Qdrant Vector Store (:6333)")]
+    QDRANT -->|3. Chunks Locais| CRAG_SVC
+    
+    CRAG_SVC -->|4. Avaliação Rápida (15ms)| BGE["Juiz BGE-Reranker-v2-M3 (BAAI)"]
+    
+    BGE -->|Score >= 0.80 - CORRECT| RES_LOCAL["Resposta Local Validada (<25ms)"]
+    RES_LOCAL --> AGENT
+    
+    BGE -->|Score < 0.50 - INCORRECT| FALLBACK["Fallback Web em Tempo Real"]
+    BGE -->|0.50 <= Score < 0.80 - AMBIGUOUS| FALLBACK
+    
+    FALLBACK -->|5. search_web & fetch_page_markdown| OSINT_SVC["osint-scraper-gateway (:3009)"]
+    OSINT_SVC -->|6. Resultados SearXNG + ruyijs Markdown| FALLBACK
+    
+    FALLBACK -->|7. Extração de Knowledge Strips| BGE
+    BGE -->|8. Parágrafos Filtrados e Validados| RES_WEB["Dossiê Web Cirúrgico"]
+    RES_WEB --> AGENT
+    
+    AGENT -->|9. remember(aprendizado novo)| CRAG_SVC
+    CRAG_SVC -->|10. FastEmbed ONNX (15ms)| QDRANT
+```
+
+1. **Recuperação Local (Qdrant :6333):** O agente consulta o banco vetorial filtrando pelo escopo desejado (`private`, `shared`, `project`).
+2. **Avaliação pelo Juiz BGE-Reranker (15ms):**
+   * **Score >= 0.80 (CORRECT):** Confiança alta. O conhecimento local é puro e confiável. Retorna ao agente imediatamente (< 25ms de latência total).
+   * **Score entre 0.50 e 0.79 (AMBIGUOUS):** Confiança média. Combina o conteúdo local com busca complementar externa na web.
+   * **Score < 0.50 (INCORRECT / DESCONHECIDO):** Conteúdo local irrelevante, inexistente ou desatualizado. Dispara o Fallback Web.
+3. **Fallback Web em Tempo Real (SearXNG + ruyijs :3009):**
+   * O gateway `:3013` aciona a ferramenta MCP `search_web` e `fetch_page_markdown` no microsserviço `:3009`.
+   * A página web retornada é dividida em blocos semânticos (*Knowledge Strips*).
+   * O **BGE-Reranker avalia novamente os blocos da web**, descartando 90% do ruído e isolando apenas as frases exatas que respondem à pergunta.
+4. **Validação Cognitiva & Auto-Aprendizado (ReAct Loop):**
+   * O agente valida a resposta no seu raciocínio e executa a tarefa.
+   * Em seguida, chama `remember()` para gravar a solução recém-aprendida no Qdrant, garantindo que consultas futuras sejam resolvidas localmente em < 20ms.
+5. **Tratamento de Insucesso Total (Edge Case):**
+   * Se os resultados da web também receberem nota baixa no BGE-Reranker (< 0.50), o serviço retorna explicitamente `{"found": false, "reason": "informação indisponível localmente e na web"}`. O agente não alucina e pode escalar a dúvida para João no Telegram.
+
+### 11.3 Interface MCP do `knowledge-memory-gateway` (:3013)
+
+| Método / Interface | Endpoint | Parâmetros de Entrada | Descrição & Resposta |
+| :--- | :--- | :--- | :--- |
+| `GET` (REST) | `/api/v1/health` | Nenhum | Retorna o status de conexão com o Qdrant (:6333), modelos carregados na memória e contagem de vetores. |
+| `GET` (MCP SSE) | `/sse` | Conexão SSE | Canal de comunicação MCP JSON-RPC 2.0 padrão para operações de memória e recuperação semântica. |
+
+#### Catálogo de Ferramentas MCP Expostas (`tools/list`):
+* **`recall`**: Executa a busca semântica avaliada pelo pipeline CRAG. Retorna trechos validados com pontuação de relevância e indicação de procedência (`source: "local"` ou `source: "web_crag"`).
+  * **Parâmetros (`inputSchema`):**
+    * `query` (string, obrigatório): Pergunta ou contexto técnico buscado.
+    * `scope` (string, obrigatório): Escopo de acesso (`"private"`, `"shared"`, `"project"`).
+    * `namespace` (string, obrigatório): Identificador do agente (ex: `"dev"`, `"cro"`, `"qa"`) ou slug do projeto (ex: `"barbearia-vintage"`).
+    * `limit` (inteiro, opcional, padrão 3): Quantidade máxima de fragmentos validados.
+    * `allow_web_fallback` (boolean, opcional, padrão true): Permite acionar busca na web via SearXNG se o conhecimento local for insuficiente.
+* **`remember`**: Persiste um novo padrão de código, solução de bug, playbook de venda ou decisão técnica no Qdrant com geração imediata de embeddings locais via FastEmbed.
+  * **Parâmetros (`inputSchema`):**
+    * `content` (string, obrigatório): Conteúdo em texto ou Markdown estruturado a ser indexado.
+    * `scope` (string, obrigatório): Escopo (`"private"`, `"shared"`, `"project"`).
+    * `namespace` (string, obrigatório): Namespace de isolamento.
+    * `tags` (array de strings, opcional): Marcadores semânticos (ex: `["nextjs", "supabase", "auth"]`).
+* **`forget`**: Remove ou invalida um fragmento de memória específico pelo ID do vetor.
+  * **Parâmetros (`inputSchema`):**
+    * `memory_id` (string, obrigatório): UUID do vetor no Qdrant.
+    * `scope` (string, obrigatório): Escopo de permissão.
+    * `namespace` (string, obrigatório): Namespace para validação de posse.
+* **`get_project_context`**: Consolida todas as memórias técnicas, arquiteturais e regras de negócio associadas a um projeto/cliente específico para inicialização de contexto de agentes.
+  * **Parâmetros (`inputSchema`):**
+    * `client_slug` (string, obrigatório): Slug do cliente no SQLite.
+
+---
+
+## 12. Esquemas de Banco de Dados da Fase 1 (SQLite WAL Mode)
 
 O banco de dados central `pipeline.db` operado em modo WAL persiste os dados operacionais de toda a malha de microsserviços:
 
@@ -525,9 +631,9 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 
 ---
 
-## 12. Matriz Completa de Cenários de Teste & Especificações BDD
+## 13. Matriz Completa de Cenários de Teste & Especificações BDD
 
-### 12.1 Seção A: Matriz Completa de Cenários de Teste dos Microsserviços
+### 13.1 Seção A: Matriz Completa de Cenários de Teste dos Microsserviços
 
 | ID | Dimensão | Microsserviço | Cenário / Condição | Entrada / Parâmetros | Resultado Esperado | Prioridade |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -579,12 +685,17 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 | **TC-146** | Happy Path | `payment-gateway (:3006)` | Consolidação de métricas de faturamento por período | Invocação MCP `get_billing_metrics` com `start_date="2026-11-01"`, `end_date="2026-11-30"` | Consulta extrato oficial, consolida créditos recebidos, calcula faturamento bruto e ticket médio sem expor credenciais bancárias. | Alta |
 | **TC-147** | Resilience | `engine-core (:8000)` | Ativação de Pausa Emergencial (Fail-Fast) por queda de gateway crítico | Healthcheck de gateway crítico (`whatsapp`, `payment` ou `guardrail`) retorna `unhealthy` | Orquestrador suspende imediatamente abordagens ativas, congela filas comerciais e despacha alerta de emergência no Telegram de João. | Crítica |
 | **TC-148** | Resilience | `engine-core (:8000)` | Auto-retomada da esteira após recuperação de saúde | Gateway crítico recuperado pelo Docker transiciona de volta para `healthy` | Orquestrador detecta restauração no loop de 5s, retoma as filas operacionais e envia notificação de normalização no Telegram. | Alta |
-| **TC-149** | Observability | Stack Grafana Loki | Coleta e indexação de logs unificados dos microsserviços | Containers gravando logs estruturados JSON no stdout | Promtail captura logs de todos os 8 microsserviços e disponibiliza para busca e dashboards no Grafana (:3001) e Loki (:3100). | Alta |
+| **TC-149** | Observability | Stack Grafana Loki | Coleta e indexação de logs unificados dos microsserviços | Containers gravando logs estruturados JSON no stdout | Promtail captura logs de todos os 9 microsserviços e disponibiliza para busca e dashboards no Grafana (:3001) e Loki (:3100). | Alta |
 | **TC-150** | Security | `workspace-sandbox-service (:3010)` | Execução de sandbox efêmera via DooD seguro | Invocação MCP `run_terminal_command` montando `/var/run/docker.sock` | Container cria contêiner irmão `node:20-slim` com limites estritos (2GB RAM, 1.5 CPUs, rede desabilitada) e o destrói ao finalizar. | Crítica |
+| **TC-151** | Happy Path | `knowledge-memory-gateway (:3013)` | Recuperação semântica local com alta confiança (CRAG Correct) | Invocação MCP `recall` com `query="padrão de rota API Next.js 15"` e `namespace="dev"` | Qdrant retorna fragmentos locais, BGE-Reranker avalia com score >= 0.80 e devolve resposta em < 25ms sem acionar web. | Alta |
+| **TC-152** | Happy Path | `knowledge-memory-gateway (:3013)` | Fallback automático para a Web em baixa confiança (CRAG Incorrect) | Invocação MCP `recall` com termo inédito inexistente no banco local | BGE-Reranker avalia score < 0.50, aciona SearXNG (:3009), extrai páginas com ruyijs, filtra *Knowledge Strips* e entrega dados com flag `source: "web_crag"`. | Alta |
+| **TC-153** | Happy Path | `knowledge-memory-gateway (:3013)` | Indexação e auto-aprendizado semântico | Invocação MCP `remember` com nova solução de bug e tags técnicas | FastEmbed gera embeddings vetoriais locais em < 15ms em CPU e persiste no Qdrant com isolamento por namespace sem custos de LLM. | Alta |
+| **TC-154** | Security | `knowledge-memory-gateway (:3013)` | Isolamento estrito de namespace entre agentes (Multi-Tenancy) | Agente `cro` tentando acessar namespace privado `dev` | Qdrant aplica Payload Filter estrito, bloqueando vazamento de dados entre personas de agentes. | Crítica |
+| **TC-155** | Resilience | `knowledge-memory-gateway (:3013)` | Tratamento de termo não localizado nem na web | Invocação MCP `recall` com busca obscura sem resultados válidos nem na web | BGE-Reranker avalia resultados da web com score < 0.50 e retorna `{"found": false}` de forma determinística sem alucinar. | Alta |
 
 ---
 
-### 12.2 Seção B: Cenários Críticos em Formato BDD (Gherkin)
+### 13.2 Seção B: Cenários Críticos em Formato BDD (Gherkin)
 
 #### BDD-F1-01: Pareamento e Autonomia do WhatsApp Gateway Microservice (TC-101 & TC-102)
 ```gherkin
@@ -802,9 +913,41 @@ Funcionalidade: Fail-Fast e Auto-Recuperação de Gateways Críticos
     E uma notificação de sucesso deve ser despachada para o Telegram de João confirmando a volta
 ```
 
+#### BDD-F1-11: Ciclo Completo de Corrective RAG (CRAG) com Juiz BGE e Fallback Web (TC-151, TC-152 & TC-153)
+```gherkin
+Funcionalidade: Corrective RAG (CRAG) com Validação Semântica e Fallback Web
+  Como agente cognitivo da software house
+  Quero buscar conhecimento técnico e playbooks na memória local
+  E acionar a web de forma autônoma apenas quando a confiança local for baixa
+  Para responder com precisão factual sem alucinar
+
+  Cenário: Recuperação direta de conhecimento local com alta confiança
+    Dado que a base vetorial do Qdrant (:6333) contém o padrão "Next.js 15 App Router API Route"
+    Quando o agente Dev invoca a ferramenta MCP "recall" com query "como criar route handler Next.js 15"
+    Então o "knowledge-memory-gateway" (:3013) deve recuperar os fragmentos locais via FastEmbed
+    E o juiz "BGE-Reranker-v2-M3" deve avaliar a relevância semântica com score superior a 0.80
+    E a resposta validada deve ser devolvida ao agente em menos de 25 milissegundos
+    E nenhuma chamada de busca externa na web deve ser disparada
+
+  Cenário: Fallback automático para a web após baixa confiança local
+    Dado que a base vetorial local não possui informações sobre uma biblioteca recente
+    Quando o agente invoca a ferramenta MCP "recall" para consultar a biblioteca
+    Então o juiz "BGE-Reranker-v2-M3" deve avaliar a pontuação local como inferior a 0.50
+    E o microsserviço :3013 deve acionar automaticamente a ferramenta "search_web" no "osint-scraper-gateway" (:3009)
+    E as páginas web extraídas devem ser filtradas pelo BGE-Reranker isolando apenas os parágrafos relevantes
+    E os fragmentos cirúrgicos da web devem ser devolvidos ao agente com o metadado "source: web_crag"
+
+  Cenário: Auto-aprendizado contínuo após resolução com sucesso
+    Dado que o agente concluiu uma tarefa utilizando conhecimento recém-adquirido da web
+    Quando o agente aciona a ferramenta MCP "remember" enviando a solução sintetizada
+    Então o "knowledge-memory-gateway" deve gerar embeddings vetoriais via FastEmbed em CPU em menos de 15ms
+    E deve persistir o novo vetor no Qdrant com os metadados de escopo e namespace correspondentes
+    E o conhecimento passa a estar disponível para consultas futuras com resposta local imediata (<25ms)
+```
+
 ---
 
-## 13. Segurança de Borda & Remediações Arquiteturais Herdadas da Auditoria (Fase 1)
+## 14. Segurança de Borda & Remediações Arquiteturais Herdadas da Auditoria (Fase 1)
 
 > [!IMPORTANT]
 > **Origem dos Requisitos:** Esta seção formaliza a alocação e especificação dos achados da auditoria de segurança da Fase 0 (`audits/REPORT.md`, `audits/FINDINGS-DETAIL.md` e `audits/NEEDS-VALIDATION.md`) cujo tratamento arquitetural pertence legitimamente à camada de borda e gateways desacoplados da Fase 1.
@@ -855,25 +998,25 @@ Funcionalidade: Fail-Fast e Auto-Recuperação de Gateways Críticos
 
 ---
 
-## 14. Orquestração, Observabilidade & Políticas de Fail-Safe da Fase 1
+## 15. Orquestração, Observabilidade & Políticas de Fail-Safe da Fase 1
 
-### 14.1 Arquitetura Docker Compose & Rede Bridge Unificada (`agency-network`)
+### 15.1 Arquitetura Docker Compose & Rede Bridge Unificada (`agency-network`)
 A suíte inteira de microsserviços sobe orquestrada via Docker Compose com isolamento de rede e DNS interno:
-* **Rede Interna:** Driver bridge `agency-network`. Cada contêiner descobre os pares pelo hostname oficial do serviço (ex: `http://whatsapp-gateway:3005`, `http://payment-gateway:3006`, `http://guardrail-gateway:3007`).
-* **Mapeamento de Portas:** Todas as portas (`:3005` a `:3012`, `:8000`, `:3001`, `:8888`) são mapeadas para `localhost` apenas para inspeção de desenvolvimento e reverse proxy.
+* **Rede Interna:** Driver bridge `agency-network`. Cada contêiner descobre os pares pelo hostname oficial do serviço (ex: `http://whatsapp-gateway:3005`, `http://payment-gateway:3006`, `http://guardrail-gateway:3007`, `http://knowledge-memory-gateway:3013`, `http://qdrant:6333`).
+* **Mapeamento de Portas:** Todas as portas (`:3005` a `:3013`, `:6333`, `:8000`, `:3001`, `:8888`) são mapeadas para `localhost` apenas para inspeção de desenvolvimento e reverse proxy.
 * **Políticas de Reinício:** Todos os contêineres rodam com `restart: unless-stopped`.
 * **Healthchecks Ativos:** Cada microsserviço define checagem periódica (`/health` a cada 10s com timeout de 3s e 3 retries). Se o processo travar ou vazar memória, o Docker restarta o contêiner automaticamente.
 
-### 14.2 Stack de Observabilidade Grafana + Loki (`:3001` e `:3100`)
+### 15.2 Stack de Observabilidade Grafana + Loki (`:3001` e `:3100`)
 Para monitorar a saúde, consumo de recursos e fluxo de requisições sem inspecionar múltiplos terminais:
-* **Loki (`:3100`):** Armazena e indexa logs de todos os 8 microsserviços e do `engine-core`.
-* **Promtail:** Agente daemon que coleta automaticamente o stdout/stderr de todos os contêineres Docker, injetando labels estruturadas (`service="whatsapp"`, `service="payment"`, `level="error"`, `correlation_id`).
+* **Loki (`:3100`):** Armazena e indexa logs de todos os 9 microsserviços e do `engine-core`.
+* **Promtail:** Agente daemon que coleta automaticamente o stdout/stderr de todos os contêineres Docker, injetando labels estruturadas (`service="whatsapp"`, `service="payment"`, `service="knowledge"`, `level="error"`, `correlation_id`).
 * **Grafana (`:3001`):** Interface visual unificada com dashboards pré-configurados:
   * Visão geral de latência de cada endpoint REST e ferramenta MCP.
   * Consumo de CPU e RAM por microsserviço.
   * Live tail de logs com filtro rápido por `correlation_id` e `lead_id`.
 
-### 14.3 Política Fail-Fast & Recuperação Automática de Gateways Críticos
+### 15.3 Política Fail-Fast & Recuperação Automática de Gateways Críticos
 Quando um gateway essencial apresenta instabilidade, a segurança operacional da software house prevalece sobre a continuidade:
 * **Gateways Críticos Monitorados:** `whatsapp-gateway` (:3005), `payment-gateway` (:3006) e `guardrail-gateway` (:3007).
 * **Ativação do Fail-Fast (Pausa Geral):** Se qualquer um dos 3 gateways críticos falhar consecutivamente no healthcheck ou retornar status `unhealthy`:
@@ -884,7 +1027,7 @@ Quando um gateway essencial apresenta instabilidade, a segurança operacional da
   1. A esteira retoma automaticamente a operação das filas pausadas sem necessidade de comando manual.
   2. Um alerta verde é despachado para o Telegram de João: *"✅ Serviço [nome] restabelecido. Esteira operacional retomada com sucesso."*
 
-### 14.4 Sandbox Docker DooD (Docker-outside-of-Docker via `/var/run/docker.sock`)
+### 15.4 Sandbox Docker DooD (Docker-outside-of-Docker via `/var/run/docker.sock`)
 O microsserviço `workspace-sandbox-service` (:3010) adota o padrão **Docker-outside-of-Docker (DooD)**:
 * **Socket Montado:** Monta o socket do host (`/var/run/docker.sock`) em modo restrito dentro do contêiner `:3010`.
 * **Criação de Contêineres Irmãos:** Quando um agente de desenvolvimento compila código ou roda testes unitários (`npm test`), o microsserviço cria contêineres efêmeros irmãos (`node:20-slim`) diretamente no daemon do host.

@@ -21,7 +21,8 @@ the-agency/
 │   ├── scraper/             # OSINT & Web Research MCP Server (SearXNG + ruyijs + Scraper Kit :3009)
 │   ├── sandbox/             # Workspace Filesystem & Docker Execution MCP Server (:3010)
 │   ├── git/                 # Git & GitHub VCS MCP Server (FastAPI :3011)
-│   └── deploy/              # Cloud & Deploy MCP Server Vercel/Supabase (FastAPI :3012)
+│   ├── deploy/              # Cloud & Deploy MCP Server Vercel/Supabase (FastAPI :3012)
+│   └── memory/              # Knowledge, Memory & CRAG MCP Server (Qdrant + BGE :3013)
 ├── apps/
 │   └── cockpit/             # Painel de Comando Web de João (Next.js 15 / Tailwind :3000)
 ├── workspaces/              # Sandboxes isolados onde os projetos de clientes são programados
@@ -96,9 +97,15 @@ Criação e padronização de todos os sentidos, braços operacionais e ferramen
 * **1.7 Cloud & Deploy MCP Server (`:3012`):**
   * Microsserviço isolado integrando Vercel REST API e Supabase Management API.
   * Expõe **Servidor MCP via SSE** com ferramentas: `deploy_preview_demo` (demos comerciais livres com URLs públicas instantâneas), `deploy_production` (gate triplo estrito: 50%+50% PIX pago, QA 100% verde e auditoria de segurança limpa), `provision_database` (Postgres Supabase) e `set_project_env_vars`.
-* **1.8 Orquestração, Observabilidade & Políticas de Fail-Safe:**
+* **1.8 Knowledge, Memory & Corrective RAG (CRAG) MCP Server (`:3013`):**
+  * Cérebro de memória técnica, playbooks e aprendizado contínuo sem dependência de abstrações lentas (sem Mem0).
+  * Banco vetorial **Qdrant** em Docker (`:6333`) com isolamento multi-tenant por agente (`private`), agência (`shared`) e projeto (`project`).
+  * Motor de embeddings local **FastEmbed** (ONNX Runtime em CPU, ~90MB RAM, BGE-M3 com suporte nativo a português e custo R$ 0,00).
+  * Juiz discriminativo **BGE-Reranker-v2-M3** (BAAI - China) avaliando relevância em 15ms: respostas locais de alta confiança (`>= 0.80`) entregues em <25ms; baixa confiança (`< 0.50`) aciona fallback em tempo real para o SearXNG (`:3009`) com extração de *Knowledge Strips*.
+  * Expõe **Servidor MCP via SSE** com ferramentas: `recall`, `remember`, `forget` e `get_project_context`.
+* **1.9 Orquestração, Observabilidade & Políticas de Fail-Safe:**
   * Docker Compose unificado com rede interna bridge `agency-network`, DNS interno e healthchecks com auto-restart.
-  * Stack de observabilidade Grafana (`:3001`) + Loki (`:3100`) + Promtail coletando logs estruturados JSON de todos os contêineres com dashboards pré-configurados.
+  * Stack de observabilidade Grafana (`:3001`) + Loki (`:3100`) + Promtail coletando logs estruturados JSON de todos os 9 contêineres com dashboards pré-configurados.
   * Política Fail-Fast com Pausa Emergencial imediata por queda de gateways críticos (`whatsapp`, `payment`, `guardrail`) e Auto-Retomada automática a cada 5s ao recuperar status `healthy`.
   * Sandbox Docker efêmero via DooD (`/var/run/docker.sock`) garantindo isolamento sem privilégios root de DinD.
 
