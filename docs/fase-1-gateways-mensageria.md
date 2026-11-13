@@ -22,6 +22,11 @@ Apenas especificações arquiteturais, regras e contratos conceituais (zero cód
 4. **Segurança e Confinamento de Credenciais:** Certificados bancários mTLS e chaves de sessão residem exclusivamente dentro de seus respectivos microsserviços MCP.
 5. **Auditoria e Observabilidade Padronizada:** Toda chamada de ferramenta trafega em formato JSON-RPC 2.0 padrão, permitindo telemetria e rastreabilidade total no barramento de logs.
 
+### 1.1 Decisões e Evoluções Arquiteturais Conscientes da Fase 1:
+* **Scraper & OSINT (Go vs. Python):** A migração do scraper inicial em Go para Python FastAPI (`google-maps-scraper-kit` com CDP leve, motor `ruyijs` e parser `Trafilatura`) unifica as bibliotecas de scraping e processamento de Markdown com a stack do `knowledge-memory-gateway` e FastEmbed, mantendo o consumo de memória rigorosamente sob controle (<45MB RAM) e eliminando a necessidade de wrappers CGo.
+* **Payment Gateway (Asaas/Mercado Pago vs. Banco Inter mTLS):** A troca de gateways com intermediários (que cobram taxa percentual por boleto/PIX) pela conexão direta com o **Banco Inter via mTLS nativo no BACEN** zera qualquer custo de intermediação financeira (R$ 0,00 de taxas), garantindo 100% de margem líquida para a agência e conformidade bancária de nível empresarial com certificados criptográficos restritos.
+* **Simplificação de Camada de Serviços:** Eliminação de complexidades de frameworks pesados (Java/Spring) previstos em rascunhos iniciais da especificação, consolidando a agência em uma arquitetura limpa Polyglot (Python 3.12+ assíncrono, Node.js 20+ e Next.js 15).
+
 ---
 
 ## 2. Topologia Geral de Servidores MCP & Portas (A Caixa 100% Fechada)
@@ -41,6 +46,16 @@ A esteira consolida toda a sua malha operacional em 10 servidores MCP desacoplad
 | **`deploy-cloud-gateway`** | `:3012` | **Cloud & Deploy MCP Server** (Python FastAPI) | `deploy_preview_demo` (demos livres Vercel), `deploy_production` (gate de QA + Segurança + PIX pago), `get_deployment_status`, `provision_database` (Supabase Postgres), `set_project_env_vars`. |
 | **`knowledge-memory-gateway`** | `:3013` | **Knowledge, Memory & CRAG MCP Server** (Python FastAPI) | `recall`, `remember`, `forget`, `ingest_document`, `get_project_context`. Qdrant (:6333) + FastEmbed BGE + BGE-Reranker-v2-m3 (CRAG com fallback SearXNG :3009). |
 | **`browser-gateway`** | `:3014` | **Browser Automation & Viewport MCP Server** (Python FastAPI / Playwright) | `browser_screenshot`, `browser_inspect_console`, `browser_interact`, `browser_run_e2e_tests`. Automação completa Chromium/Firefox headless com emulação de viewport e traces. |
+
+### Infraestrutura de Suporte & Armazenamento:
+
+| Serviço de Infraestrutura | Porta Local | Papel na Infraestrutura | Tecnologia / Detalhes |
+| :--- | :--- | :--- | :--- |
+| **`qdrant`** | `:6333` | Armazenamento Vetorial & Busca Semântica | Qdrant em Docker com persistência em disco, índices HNSW e isolamento multi-tenant por agente e projeto. |
+| **`searxng`** | `:8888` | Meta-Buscador Web Open-Source | Instância local privada anonimizada agregando 70+ provedores sem limite de requisições ou vazamento de IP. |
+| **`rabbitmq`** | `:5672` / `:15672` | Barramento AMQP Distribuído | Mensageria assíncrona, filas de dead-letter (`agency.dlx`), porta 5672 para conexões e 15672 para painel web. |
+| **`grafana`** | `:3001` | Dashboard Visual de Observabilidade & Métricas | Interface gráfica centralizando telemetria, dashboards de latência e live tail de logs. |
+| **`loki`** | `:3100` | Agregação e Indexação de Logs | Sistema de logs distribuídos recebendo fluxos estruturados JSON enviados via Promtail. |
 
 ### Diagrama de Comunicação MCP:
 
@@ -397,7 +412,7 @@ Para evitar que agentes sofram bloqueios de 2FA (SMS/Authenticator), captchas in
 * **`request_owner_approval`**: Envia notificação de decisão pendente para João com botões de aprovação/rejeição rápida no chat privado. Parâmetros: `decision_type` (string), `details` (string), `lead_id` (inteiro opcional).
 
 ### 7.3 Comandos Suportados no Telegram de João
-* `/status`: Consulta a saúde agregada de todos os servidores MCP (`:8000`, `:3005`, `:3006`, `:3007`, `:3009`, `:3010`) e exibe saldo e agentes ativos.
+* `/status`: Consulta a saúde agregada de todos os servidores MCP e infraestruturas (`:8000`, `:3005` a `:3014`, `:6333`, `:8888`, `:5672`, `:3001`, `:3100`) e exibe saldo e agentes ativos.
 * `/pausar`: Suspende imediatamente os disparos de mensagens ativas e tarefas de mineração.
 * `/retomar`: Restabelece a operação normal da esteira.
 * `/aprovar <lead_id>`: Concede aprovação humana para avanço de etapa no modo de calibragem assistida.
@@ -722,29 +737,43 @@ O `browser-gateway` não é exclusivo de QA, sendo consumido por 4 agentes funda
 
 ## 13. Esquemas de Banco de Dados da Fase 1 (SQLite WAL Mode)
 
-O banco de dados central `pipeline.db` operado em modo WAL persiste os dados operacionais de toda a malha de microsserviços:
+O banco de dados central `pipeline.db` operado em modo WAL persiste os dados operacionais de toda a malha de microsserviços. Os esquemas abaixo complementam as tabelas de infraestrutura fundamental do motor estabelecidas na Fase 0:
 
-### 12.1 Tabela `security_incidents` (Auditoria do Guardrail :3007)
+### 13.1 Tabela `leads` (Entidade Central de Negócio da Esteira)
+* `id` (TEXT PRIMARY KEY) — Identificador único do lead (slug ou UUID).
+* `name` (TEXT NOT NULL) — Nome comercial do estabelecimento.
+* `niche` (TEXT NOT NULL) — Segmento de atuação (ex: `clinicas`, `barbearias`, `restaurantes`).
+* `phone` (TEXT NOT NULL UNIQUE) — Telefone normalizado no padrão internacional E.164.
+* `address` (TEXT) — Endereço físico minerado.
+* `rating` (REAL) — Nota de avaliação no Google Maps.
+* `reviews_count` (INTEGER) — Total de avaliações coletadas.
+* `instagram_url` (TEXT) — Link do perfil social identificado.
+* `extracted_data` (JSON) — Metadados adicionais, fotos e posts minerados pelo OSINT Scraper.
+* `stage` (TEXT NOT NULL DEFAULT 'MINED') — Estágio atual no funil (`MINED`, `DEMO_READY`, `OUTREACH`, `NEGOTIATING`, `DEV`, `QA`, `HOMOLOGATING`, `PROD`).
+* `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+* `updated_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+
+### 13.2 Tabela `security_incidents` (Auditoria do Guardrail :3007)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
-* `sender_jid` (TEXT, NOT NULL) — Telefone ou identificador do remetente.
-* `raw_message` (TEXT, NOT NULL) — Conteúdo bruto da mensagem inspecionada.
-* `threat_category` (TEXT, NOT NULL) — Categoria detectada (ex: `prompt_injection`, `jailbreak`, `toxic`).
-* `risk_score` (REAL, NOT NULL) — Índice de confiança da classificação (0.0 a 1.0).
-* `action_taken` (TEXT, NOT NULL) — Ação aplicada (`SILENT_DROP`, `BLOCKED`).
+* `sender_jid` (TEXT NOT NULL) — Telefone ou identificador do remetente.
+* `raw_message` (TEXT NOT NULL) — Conteúdo bruto da mensagem inspecionada.
+* `threat_category` (TEXT NOT NULL) — Categoria detectada (ex: `prompt_injection`, `jailbreak`, `toxic`).
+* `risk_score` (REAL NOT NULL) — Índice de confiança da classificação (0.0 a 1.0).
+* `action_taken` (TEXT NOT NULL) — Ação aplicada (`SILENT_DROP`, `BLOCKED`).
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 
-### 12.2 Tabela `pix_transactions` (Transações do Payment Gateway :3006)
+### 13.3 Tabela `pix_transactions` (Transações do Payment Gateway :3006)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `txid` (TEXT UNIQUE NOT NULL) — Identificador único da transação registrado no BACEN.
-* `lead_id` (INTEGER, NOT NULL) — Identificador do lead associado.
-* `amount_cents` (INTEGER, NOT NULL) — Valor da cobrança em centavos (ex: 75000 para R$ 750,00).
+* `lead_id` (TEXT NOT NULL) — Identificador do lead associado (Foreign Key referenciando `leads.id`).
+* `amount_cents` (INTEGER NOT NULL) — Valor da cobrança em centavos (ex: 75000 para R$ 750,00).
 * `status` (TEXT NOT NULL) — Estado da cobrança (`ATIVA`, `CONCLUIDA`, `EXPIRADA`, `CANCELADA`).
 * `pix_copia_e_cola` (TEXT NOT NULL) — Chave Copia e Cola.
 * `qr_code_base64` (TEXT) — Imagem do QR Code em Base64.
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 * `paid_at` (TIMESTAMP) — Data e hora exata da liquidação.
 
-### 12.3 Tabela `telegram_audit_logs` (Auditoria do Telegram Gateway :3008)
+### 13.4 Tabela `telegram_audit_logs` (Auditoria do Telegram Gateway :3008)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `direction` (TEXT NOT NULL) — Direção da mensagem (`OUTBOUND_ALERT`, `INBOUND_COMMAND`).
 * `command` (TEXT) — Comando emitido pelo administrador (ex: `/status`, `/pausar`).
@@ -752,7 +781,7 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `status` (TEXT NOT NULL) — Status de entrega ou execução (`SENT`, `EXECUTED`, `REJECTED`).
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 
-### 12.4 Tabela `git_audit_logs` (Auditoria do Git VCS Gateway :3011)
+### 13.5 Tabela `git_audit_logs` (Auditoria do Git VCS Gateway :3011)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `workspace_id` (TEXT NOT NULL) — Identificador do projeto.
 * `action` (TEXT NOT NULL) — Ação executada (`COMMIT`, `BRANCH_CREATE`, `PR_CREATE`, `PUSH`).
@@ -762,9 +791,9 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `message` (TEXT) — Mensagem convencional de commit ou título de PR.
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 
-### 12.5 Tabela `deployments` (Auditoria do Cloud & Deploy Gateway :3012)
+### 13.6 Tabela `deployments` (Auditoria do Cloud & Deploy Gateway :3012)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
-* `lead_id` (INTEGER NOT NULL) — Identificador do cliente.
+* `lead_id` (TEXT NOT NULL) — Identificador do cliente (Foreign Key referenciando `leads.id`).
 * `workspace_id` (TEXT NOT NULL) — Workspace do projeto.
 * `deployment_type` (TEXT NOT NULL) — Tipo de deploy (`PREVIEW_DEMO`, `PRODUCTION`).
 * `deployment_url` (TEXT NOT NULL) — URL pública gerada na Vercel.
@@ -773,6 +802,12 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `security_approved` (BOOLEAN DEFAULT FALSE) — Confirmação de auditoria de segurança.
 * `payment_cleared` (BOOLEAN DEFAULT FALSE) — Confirmação de liquidação financeira.
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+
+### 13.7 Referência Cruzada às Tabelas do Motor Central (Fase 0)
+As seguintes tabelas de infraestrutura e governança persistem no mesmo arquivo `pipeline.db` e foram especificadas na Fase 0 (`docs/fase-0-motor-agentes.md` e `docs/fase-0-remediacao-hardening.md`):
+* **`agent_messages`**: Mensagens de loop de raciocínio, pensamentos, tool calls e tool results dos agentes.
+* **`audit_logs`**: Trilha de auditoria cronológica imutável de todas as ações e chamadas operacionais da esteira.
+* **`token_metrics`**: Contabilidade financeira ao centavo do consumo de tokens (prompt, completion, cache) por modelo e agente.
 
 ---
 
@@ -803,7 +838,7 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 | **TC-119** | Business Rule | `osint-scraper-gateway (:3009)` | Validação prévia de existência de WhatsApp | Scraper invoca `check-whatsapp` no `whatsapp-gateway` | Descarta telefones fixos ou sem WhatsApp ativo antes de cadastrar o lead na tabela `leads`. | Alta |
 | **TC-120** | Business Rule | `osint-scraper-gateway (:3009)` | Deduplicação soberana de leads | Tentativa de minerar estabelecimento já cadastrado | Sistema detecta duplicidade pelo telefone normalizado E.164 e descarta a inclusão repetida. | Média |
 | **TC-121** | Happy Path | `telegram-gateway (:3008)` | Despacho de alerta comemorativo de PIX pago | `POST /api/v1/telegram/alert` com payload de pagamento | Mensagem formatada em MarkdownV2 entregue instantaneamente no chat privado de João com som de notificação prioritário. | Alta |
-| **TC-122** | Happy Path | `telegram-gateway (:3008)` | Execução de comando administrativo `/status` | João envia `/status` pelo Telegram | Microsserviço consulta a saúde agregada das portas `:8000`, `:3005`, `:3006`, `:3007`, `:3009`, `:3010` e responde em <2s. | Alta |
+| **TC-122** | Happy Path | `telegram-gateway (:3008)` | Execução de comando administrativo `/status` | João envia `/status` pelo Telegram | Microsserviço consulta a saúde agregada das portas `:8000`, `:3005` a `:3014`, `:6333`, `:8888`, `:5672`, `:3001`, `:3100` e responde em <2s. | Alta |
 | **TC-123** | Security | `telegram-gateway (:3008)` | Rejeição de mensagens de remetentes não autorizados | Chat ID diferente de `TELEGRAM_ADMIN_CHAT_ID` enviando comandos | Mensagem sumariamente ignorada sem responder nada; log de tentativa não autorizada registrado. | Crítica |
 | **TC-124** | Happy Path | `telegram-gateway (:3008)` | Comando de pausa emergencial da esteira (`/pausar`) | João envia `/pausar` pelo Telegram | Orquestrador suspende imediatamente novos disparos de WhatsApp e tarefas de prospecção, confirmando no Telegram. | Alta |
 | **TC-125** | Happy Path | `workspace-sandbox-service (:3010)` | Leitura e escrita segura de arquivos de workspace | Chamadas em `/api/v1/workspace/read-file` e `/write-file` | Operações executadas exclusivamente dentro do diretório do workspace do cliente, rejeitando Path Traversal. | Alta |
