@@ -22,7 +22,8 @@ the-agency/
 │   ├── sandbox/             # Workspace Filesystem & Docker Execution MCP Server (:3010)
 │   ├── git/                 # Git & GitHub VCS MCP Server (FastAPI :3011)
 │   ├── deploy/              # Cloud & Deploy MCP Server Vercel/Supabase (FastAPI :3012)
-│   └── memory/              # Knowledge, Memory & CRAG MCP Server (Qdrant + BGE :3013)
+│   ├── memory/              # Knowledge, Memory & CRAG MCP Server (Qdrant + BGE :3013)
+│   └── browser/             # Browser Automation & Playwright MCP Server (FastAPI :3014)
 ├── apps/
 │   └── cockpit/             # Painel de Comando Web de João (Next.js 15 / Tailwind :3000)
 ├── workspaces/              # Sandboxes isolados onde os projetos de clientes são programados
@@ -105,9 +106,14 @@ Criação e padronização de todos os sentidos, braços operacionais e ferramen
   * Juiz discriminativo **BGE-Reranker-v2-M3** (BAAI - China) avaliando relevância em 15ms: respostas locais de alta confiança (`>= 0.80`) entregues em <25ms; baixa confiança (`< 0.50`) aciona fallback em tempo real para o SearXNG (`:3009`) com extração de *Knowledge Strips*.
   * Expõe **Servidor MCP via SSE** com ferramentas: `recall`, `remember`, `forget`, `ingest_document` e `get_project_context`.
   * Ingestão automatizada no boot via padrão **Knowledge-as-Code** (diretório raiz `knowledge/` fatiado semanticamente em <3s com validação de hashes MD5).
-* **1.9 Orquestração, Observabilidade & Políticas de Fail-Safe:**
+* **1.9 Browser Automation & Viewport Gateway (`:3014`):**
+  * Microsserviço independente em Python com **Microsoft Playwright** rodando em container oficial com Chromium e Firefox headless isolados.
+  * Expõe **Servidor MCP via SSE** com ferramentas: `browser_screenshot`, `browser_inspect_console`, `browser_interact` e `browser_run_e2e_tests`.
+  * Atendimento multi-persona: CRO (screenshots fidedignos de demos para WhatsApp), QA (inspeção de erros de console/rede e suítes E2E), Designer (testes responsivos mobile 375x812 e desktop 1920x1080) e Dev (validação de renderização/hidratação).
+  * Arquitetura de pooling de `BrowserContext` efêmero: inicialização em <30ms, consumo médio de apenas ~180MB RAM e isolamento total de cookies/cache por teste.
+* **1.10 Orquestração, Observabilidade & Políticas de Fail-Safe:**
   * Docker Compose unificado com rede interna bridge `agency-network`, DNS interno e healthchecks com auto-restart.
-  * Stack de observabilidade Grafana (`:3001`) + Loki (`:3100`) + Promtail coletando logs estruturados JSON de todos os 9 contêineres com dashboards pré-configurados.
+  * Stack de observabilidade Grafana (`:3001`) + Loki (`:3100`) + Promtail coletando logs estruturados JSON de todos os 10 contêineres com dashboards pré-configurados.
   * Política Fail-Fast com Pausa Emergencial imediata por queda de gateways críticos (`whatsapp`, `payment`, `guardrail`) e Auto-Retomada automática a cada 5s ao recuperar status `healthy`.
   * Sandbox Docker efêmero via DooD (`/var/run/docker.sock`) garantindo isolamento sem privilégios root de DinD.
 

@@ -26,7 +26,7 @@ Apenas especificações arquiteturais, regras e contratos conceituais (zero cód
 
 ## 2. Topologia Geral de Servidores MCP & Portas (A Caixa 100% Fechada)
 
-A esteira consolida toda a sua malha operacional em 9 servidores MCP desacoplados e independentes:
+A esteira consolida toda a sua malha operacional em 10 servidores MCP desacoplados e independentes:
 
 | Serviço / Microsserviço | Porta Local | Papel na Arquitetura MCP | Ferramentas MCP Expostas (`tools/list`) |
 | :--- | :--- | :--- | :--- |
@@ -40,6 +40,7 @@ A esteira consolida toda a sua malha operacional em 9 servidores MCP desacoplado
 | **`git-vcs-gateway`** | `:3011` | **Git & GitHub VCS MCP Server** (Python FastAPI) | `git_init_repository`, `git_create_branch`, `git_commit` (com autor granular por agente), `git_get_diff`, `git_get_status`, `github_create_repo`, `github_push`, `github_create_pull_request`. |
 | **`deploy-cloud-gateway`** | `:3012` | **Cloud & Deploy MCP Server** (Python FastAPI) | `deploy_preview_demo` (demos livres Vercel), `deploy_production` (gate de QA + Segurança + PIX pago), `get_deployment_status`, `provision_database` (Supabase Postgres), `set_project_env_vars`. |
 | **`knowledge-memory-gateway`** | `:3013` | **Knowledge, Memory & CRAG MCP Server** (Python FastAPI) | `recall`, `remember`, `forget`, `ingest_document`, `get_project_context`. Qdrant (:6333) + FastEmbed BGE + BGE-Reranker-v2-m3 (CRAG com fallback SearXNG :3009). |
+| **`browser-gateway`** | `:3014` | **Browser Automation & Viewport MCP Server** (Python FastAPI / Playwright) | `browser_screenshot`, `browser_inspect_console`, `browser_interact`, `browser_run_e2e_tests`. Automação completa Chromium/Firefox headless com emulação de viewport e traces. |
 
 ### Diagrama de Comunicação MCP:
 
@@ -64,6 +65,7 @@ flowchart TD
         GIT_SVC["git-vcs-gateway (:3011)<br/>FastAPI + Git/GitHub VCS MCP Server"]
         DEPLOY_SVC["deploy-cloud-gateway (:3012)<br/>FastAPI + Vercel/Supabase Deploy MCP Server"]
         KNOW_SVC["knowledge-memory-gateway (:3013)<br/>Qdrant + FastEmbed + BGE CRAG MCP Server"]
+        BROWSER_SVC["browser-gateway (:3014)<br/>Playwright Headless Browser MCP Server"]
     end
 
     subgraph Armazenamento_Vetorial["Base Vetorial & Memória"]
@@ -84,6 +86,7 @@ flowchart TD
     CORE <-->|MCP JSON-RPC via SSE| GIT_SVC
     CORE <-->|MCP JSON-RPC via SSE| DEPLOY_SVC
     CORE <-->|MCP JSON-RPC via SSE| KNOW_SVC
+    CORE <-->|MCP JSON-RPC via SSE| BROWSER_SVC
 
     %% Knowledge & CRAG Flow
     KNOW_SVC <-->|Embeddings & Busca Vetorial| QDRANT_STORE
@@ -651,7 +654,73 @@ knowledge/
 
 ---
 
-## 12. Esquemas de Banco de Dados da Fase 1 (SQLite WAL Mode)
+## 12. Especificação do Browser Automation & Viewport Gateway — Playwright (`:3014`)
+
+### 12.1 Tecnologias & Arquitetura Playwright
+O microsserviço `browser-gateway` opera na porta `:3014` e provê capacidades universais de **navegação gráfica real, renderização visual de DOM/CSS, emulação de viewports responsivos, inspeção de console e execução de testes E2E**:
+
+* **Motor Base:** Microsoft Playwright oficial executado em Python FastAPI.
+* **Ambiente Confinado:** Imagem Docker oficial `mcr.microsoft.com/playwright/python:v1.49.0-noble` operando com Chromium e Firefox headless instalados.
+* **Gerenciamento Eficiente de Memória (Browser Context Pooling):**
+  * Em vez de iniciar um novo processo pesado de navegador a cada requisição (o que consumiria ~300 MB de RAM por chamada), o gateway mantém uma instância mestre do Chromium e instancia **BrowserContexts efêmeros** em menos de **30 milissegundos**.
+  * Cada contexto possui cookies, cache e localStorage 100% isolados, garantindo que testes de clientes diferentes nunca compartilhem sessões.
+* **Proteção contra Crashes & Timeouts:**
+  * Toda ação possui timeout rígido de **15 segundos**. Se uma aplicação renderizar um loop infinito de JavaScript, o contexto da aba é destruído com `SIGKILL` sem desestabilizar o contêiner ou o restante da agência.
+
+### 12.2 Casos de Uso Multi-Persona (A Ferramenta Universal)
+O `browser-gateway` não é exclusivo de QA, sendo consumido por 4 agentes fundamentais da esteira:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        browser-gateway (:3014)                         │
+├─────────────────────┬───────────────────┬──────────────────────────────┤
+│ 1. CRO (Vendas)     │ 2. QA Engineer    │ 3. Designer & Dev            │
+│ • Screenshot da     │ • Execução E2E    │ • Auditoria de layout mobile │
+│   demo Vercel       │ • Captura de logs │   (375x812) vs 4K            │
+│ • Envio de foto no  │   de console      │ • Validação de hidratação e  │
+│   WhatsApp do lead  │ • Teste de cliques│   animações de componentes   │
+└─────────────────────┴───────────────────┴──────────────────────────────┘
+```
+
+1. **Vendas de Alto Impacto (CRO no WhatsApp):** Quando uma demo comercial é gerada na Vercel (ex: `https://demo-barbearia.vercel.app`), o CRO aciona `browser_screenshot` para obter a imagem em alta resolução e despachá-la pelo WhatsApp (`send_whatsapp_media`). Uma prévia visual imediata gera senso de posse instantâneo no cliente.
+2. **Homologação Visual & Inspeção Multimodal (QA com Gemini):** O QA Engineer captura screenshots de tela inteira e submete ao modelo multimodal (Gemini) para auditar contraste, alinhamento de botões e integridade tipográfica.
+3. **Auditoria de Console & Falhas Ocultas:** Acessa a aplicação e escuta os eventos de `console.error`, falhas de rede (`404` ou `500` em APIs) e warnings de hidratação do React, gerando um dossiê limpo antes de qualquer deploy em produção.
+4. **Testes E2E Interativos:** Simula a jornada do usuário real (clicar em "Agendar", preencher nome e telefone, submeter formulário) e valida se a confirmação em tela foi exibida.
+
+### 12.3 Endpoints REST & Interface MCP do `browser-gateway` (:3014)
+
+| Método / Interface | Endpoint | Parâmetros de Entrada | Descrição & Resposta |
+| :--- | :--- | :--- | :--- |
+| `GET` (REST) | `/api/v1/health` | Nenhum | Retorna status do daemon do Chromium, instâncias ativas de BrowserContext e memória livre. |
+| `GET` (MCP SSE) | `/sse` | Conexão SSE | Canal de comunicação MCP JSON-RPC 2.0 para acionamento de navegação, prints e testes E2E. |
+
+#### Catálogo de Ferramentas MCP Expostas (`tools/list`):
+* **`browser_screenshot`**: Renderiza a URL com viewport customizado (Desktop ou Mobile), aguarda a estabilização da rede/hidratação do SPA e captura screenshot em alta resolução.
+  * **Parâmetros (`inputSchema`):**
+    * `url` (string, obrigatório): URL pública ou local a ser renderizada.
+    * `viewport_width` (inteiro, opcional, padrão 1280): Largura em pixels (ex: 375 para mobile, 1920 para desktop).
+    * `viewport_height` (inteiro, opcional, padrão 800): Altura em pixels.
+    * `full_page` (boolean, opcional, padrão false): Se true, captura toda a extensão vertical da página.
+    * `wait_for_selector` (string, opcional): Seletor CSS que deve estar visível antes do print (ex: `"#hero-section"`).
+  * **Retorno:** Objeto contendo `image_path` (arquivo salvo no storage local) e `image_base64`.
+* **`browser_inspect_console`**: Acessa a URL, aguarda 3 segundos para execução de scripts do cliente e extrai todos os logs de console e falhas de requisições HTTP.
+  * **Parâmetros (`inputSchema`):**
+    * `url` (string, obrigatório): URL a ser inspecionada.
+  * **Retorno:** Objeto com `has_errors: boolean`, `console_errors` (array de strings), `network_failures` (array com status e URLs com falha).
+* **`browser_interact`**: Executa uma cadeia de ações de automação (clicar, preencher, rolar) usando os seletores resilientes com auto-wait do Playwright.
+  * **Parâmetros (`inputSchema`):**
+    * `url` (string, obrigatório): URL da aplicação.
+    * `actions` (array de objetos, obrigatório): Lista ordenada de ações (ex: `[{"type": "fill", "selector": "#name", "value": "João"}, {"type": "click", "selector": "button[type='submit']"}]`).
+  * **Retorno:** Objeto com `success: boolean`, `final_url`, `error_message` se falhar.
+* **`browser_run_e2e_tests`**: Dispara a suíte de testes Playwright pré-configurada no workspace do cliente e consolida o relatório para o gate de deploy.
+  * **Parâmetros (`inputSchema`):**
+    * `workspace_id` (string, obrigatório): Identificador do workspace.
+    * `test_filter` (string, opcional): Padrão de arquivo de teste (ex: `"e2e/checkout.spec.ts"`).
+  * **Retorno:** Objeto com `total_tests`, `passed`, `failed`, `duration_ms` e `report_path`.
+
+---
+
+## 13. Esquemas de Banco de Dados da Fase 1 (SQLite WAL Mode)
 
 O banco de dados central `pipeline.db` operado em modo WAL persiste os dados operacionais de toda a malha de microsserviços:
 
@@ -707,9 +776,9 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 
 ---
 
-## 13. Matriz Completa de Cenários de Teste & Especificações BDD
+## 14. Matriz Completa de Cenários de Teste & Especificações BDD
 
-### 13.1 Seção A: Matriz Completa de Cenários de Teste dos Microsserviços
+### 14.1 Seção A: Matriz Completa de Cenários de Teste dos Microsserviços
 
 | ID | Dimensão | Microsserviço | Cenário / Condição | Entrada / Parâmetros | Resultado Esperado | Prioridade |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -770,10 +839,14 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 | **TC-155** | Resilience | `knowledge-memory-gateway (:3013)` | Tratamento de termo não localizado nem na web | Invocação MCP `recall` com busca obscura sem resultados válidos nem na web | BGE-Reranker avalia resultados da web com score < 0.50 e retorna `{"found": false}` de forma determinística sem alucinar. | Alta |
 | **TC-156** | Happy Path | `knowledge-memory-gateway (:3013)` | Ingestão em lote de Knowledge-as-Code no primeiro boot | Qdrant vazio na inicialização do microsserviço | Lê diretório `knowledge/`, realiza chunking semântico por cabeçalhos `#`/`##`, gera embeddings FastEmbed e indexa playbooks no Qdrant em < 3s. | Alta |
 | **TC-157** | Happy Path | `knowledge-memory-gateway (:3013)` | Ingestão dinâmica de documento técnico via ferramenta MCP | Invocação MCP `ingest_document` com `file_path="knowledge/dev/nextjs-patterns.md"` | Fatiador divide o arquivo em blocos autocontidos, valida integridade MD5 e persiste os vetores no namespace correspondente sem chamadas de LLM. | Alta |
+| **TC-158** | Happy Path | `browser-gateway (:3014)` | Captura de screenshot de demonstração comercial para WhatsApp | Invocação MCP `browser_screenshot` com URL de preview e viewport mobile | Renderiza a página via Playwright Chromium, aguarda hidratação SPA e salva screenshot em alta resolução em < 1.5s. | Alta |
+| **TC-159** | Happy Path | `browser-gateway (:3014)` | Inspeção de console e rede pré-deploy | Invocação MCP `browser_inspect_console` com URL de aplicação | Acessa a página, captura logs do console do navegador e falhas de rede HTTP, reportando `has_errors: false` para páginas saudáveis. | Alta |
+| **TC-160** | Happy Path | `browser-gateway (:3014)` | Execução de testes E2E com fluxo interativo | Invocação MCP `browser_interact` com sequência de cliques e preenchimento de inputs | Executa o fluxo de ponta a ponta (ex: agendamento), aguarda seletores com auto-wait e valida mensagem de sucesso. | Alta |
+| **TC-161** | Resilience | `browser-gateway (:3014)` | Recuperação de falha em renderização de página pesada | Acesso a página com crash de JavaScript ou timeout de carregamento | Gateway isola o browser context com timeout de 15s, encerra a aba travada sem afetar os outros microsserviços e retorna erro estruturado. | Alta |
 
 ---
 
-### 13.2 Seção B: Cenários Críticos em Formato BDD (Gherkin)
+### 14.2 Seção B: Cenários Críticos em Formato BDD (Gherkin)
 
 #### BDD-F1-01: Pareamento e Autonomia do WhatsApp Gateway Microservice (TC-101 & TC-102)
 ```gherkin
@@ -1023,14 +1096,50 @@ Funcionalidade: Corrective RAG (CRAG) com Validação Semântica e Fallback Web
     E o conhecimento passa a estar disponível para consultas futuras com resposta local imediata (<25ms)
 ```
 
+#### BDD-F1-12: Inspeção Visual e Testes E2E com Playwright no browser-gateway (:3014) (TC-158 a TC-161)
+```gherkin
+Funcionalidade: Automação Web, Inspeção de Console e Testes E2E com Playwright (:3014)
+  Como agente da software house (CRO, QA, Designer ou Dev)
+  Quero renderizar aplicações web em navegadores reais isolados em headless
+  Para capturar evidências visuais de prévia comercial e certificar fluxos funcionais sem erros de console
+
+  Cenário: Captura de screenshot mobile de demonstração comercial para WhatsApp
+    Dado que uma URL de demonstração foi gerada na Vercel pelo "deploy-cloud-gateway"
+    Quando o agente CRO invoca a ferramenta MCP "browser_screenshot" no "browser-gateway" (:3014) com:
+      | url                                     | viewport | full_page | wait_network_idle |
+      | https://demo-clinica-sorriso.vercel.app | mobile   | false     | true              |
+    Então o "browser-gateway" deve instanciar um BrowserContext efêmero com viewport de 375x812 e DPR 3
+    E deve aguardar a hidratação completa dos componentes Next.js / React
+    E deve capturar a imagem em formato PNG em menos de 1.5 segundos
+    E a imagem deve ser persistida e disponibilizada para despacho imediato no WhatsApp
+
+  Cenário: Inspeção de erros de console e integridade de rede no pré-deploy de QA
+    Dado que uma branch de feature foi concluída pelo agente Dev
+    Quando o agente QA aciona a ferramenta MCP "browser_inspect_console" para a aplicação em teste
+    Então o Playwright deve escutar eventos "console" e "pageerror" durante o ciclo de carregamento
+    E deve monitorar requisições HTTP retornando status 4xx ou 5xx
+    E deve retornar um relatório estruturado contendo a lista de logs e a flag "has_errors"
+    E se "has_errors" for falso, o agente QA deve homologar a aprovação do Gate de Qualidade
+
+  Cenário: Execução de jornada crítica E2E com auto-wait e preenchimento de formulário
+    Dado que o sistema possui um fluxo de agendamento online com múltiplos passos
+    Quando o agente QA invoca a ferramenta MCP "browser_interact" definindo a sequência de ações:
+      | action | selector               | value       |
+      | fill   | input[name="customer"] | Dr. Ricardo |
+      | click  | button[type="submit"]  |             |
+    Então o Playwright deve aplicar auto-waiting nos seletores garantindo visibilidade e acionabilidade
+    E deve submeter o formulário sem recorrer a delays arbitrários de sleep
+    E deve confirmar a presença da mensagem de confirmação de agendamento na interface
+```
+
 ---
 
-## 14. Segurança de Borda & Remediações Arquiteturais Herdadas da Auditoria (Fase 1)
+## 15. Segurança de Borda & Remediações Arquiteturais Herdadas da Auditoria (Fase 1)
 
 > [!IMPORTANT]
 > **Origem dos Requisitos:** Esta seção formaliza a alocação e especificação dos achados da auditoria de segurança da Fase 0 (`audits/REPORT.md`, `audits/FINDINGS-DETAIL.md` e `audits/NEEDS-VALIDATION.md`) cujo tratamento arquitetural pertence legitimamente à camada de borda e gateways desacoplados da Fase 1.
 
-### 13.1 SEC-009: Inspeção Semântica Profunda de Injeção de Prompt & Jailbreak (`guardrail-gateway :3007`)
+### 15.1 SEC-009: Inspeção Semântica Profunda de Injeção de Prompt & Jailbreak (`guardrail-gateway :3007`)
 * **Contexto de Borda:** Na Fase 0, mensagens de ferramentas locais foram envelopadas com tags estruturais (`<untrusted_content>`). No entanto, a interação com clientes desconhecidos via WhatsApp, Telegram e formulários web expõe o sistema a ataques adversariais complexos (Prompt Injection indireto, Jailbreaks, System Prompt Extraction e Command Hijacking).
 * **Especificação Soberana do Gateway de Guardrail:**
   1. **Inspeção Síncrona Obrigatória:** Nenhuma mensagem externa atinge o `engine-core` sem validação prévia pelo `guardrail-gateway (:3007)`.
@@ -1038,7 +1147,7 @@ Funcionalidade: Corrective RAG (CRAG) com Validação Semântica e Fallback Web
   3. **Categorias Monitoradas:** Violações de segurança, tentativas de forçar personas desautorizadas, injeção de instruções de sistema e tentativa de extração de credenciais.
   4. **Ação de Bloqueio:** Mensagens classificadas como maliciosas são descartadas na borda, registrando evento em log de segurança e devolvendo resposta neutra de desvio ao remetente, sem consumir tokens do modelo cognitivo principal.
 
-### 13.2 SEC-021: Barramento AMQP Distribuído e Validação Rígida de Payloads (RabbitMQ)
+### 15.2 SEC-021: Barramento AMQP Distribuído e Validação Rígida de Payloads (RabbitMQ)
 * **Contexto de Borda:** O RabbitMQ (introduzido na Fase 0 para fila local de tarefas) é expandido na Fase 1 para se tornar o **barramento central de mensageria assíncrona** entre todos os microsserviços e gateways.
 * **Topologia de Exchanges e Queues AMQP:**
   * **Exchange Principal:** `agency.topic` (Topic Exchange durável).
@@ -1058,17 +1167,17 @@ Funcionalidade: Corrective RAG (CRAG) com Validação Semântica e Fallback Web
     * `timestamp`: ISO 8601 UTC
     * `payload`: JSON com teto rígido de **64 KB**. Mensagens excedentes são rejeitadas com erro de validação.
 
-### 13.3 SEC-NV-001: Arquitetura de Reverse Proxy & Ingress Rate Limiting
+### 15.3 SEC-NV-001: Arquitetura de Reverse Proxy & Ingress Rate Limiting
 * **Contexto de Borda:** Em conformidade com o apontamento `audits/NEEDS-VALIDATION.md`, os servidores Uvicorn e Express da esteira nunca devem ser expostos diretamente à internet pública.
 * **Arquitetura de Ingress de Produção:**
-  1. **Proxy Reverso Unificado:** Nginx / Cloudflare WAF à frente das portas `:8000`, `:3005`, `:3006`, `:3007`, `:3008`, `:3009` e `:3010`.
+  1. **Proxy Reverso Unificado:** Nginx / Cloudflare WAF à frente das portas `:8000`, `:3005`, `:3006`, `:3007`, `:3008`, `:3009`, `:3010`, `:3011`, `:3012`, `:3013` e `:3014`.
   2. **Rate Limiting por IP na Borda:**
      * Webhooks de pagamento (`/api/v1/inter/webhook`): máximo de **30 req/min por IP** com whitelist dos ranges de IP oficiais do Banco Inter.
      * Webhooks de mensageria e formulários públicos: máximo de **60 req/min por IP**.
      * Endpoints de orquestração interna (`/api/v1/agent/run`): acesso bloqueado da internet pública, restrito à rede interna / VPN.
   3. **Mitigação Anti-DDoS e WAF:** Bloqueio na borda de scanners de vulnerabilidades (SQLi, XSS, Path Traversal) antes de alcançar qualquer código de aplicação.
 
-### 13.4 Desacoplamento das Ferramentas Locais para o Servidor MCP Dedicado (:3010)
+### 15.4 Desacoplamento das Ferramentas Locais para o Servidor MCP Dedicado (:3010)
 * **Transição Arquitetural da Fase 0 para a Fase 1:**
   * Na Fase 0, `read_file`, `write_file`, `patch_file`, `list_directory` e `run_terminal_command` foram implementados embutidos no processo Python do `services/engine`.
   * Na Fase 1, essas ferramentas são **completamente migradas e desacopladas** para o microsserviço autônomo **`workspace-sandbox-service` (Porta `:3010`)**.
@@ -1076,25 +1185,25 @@ Funcionalidade: Corrective RAG (CRAG) com Validação Semântica e Fallback Web
 
 ---
 
-## 15. Orquestração, Observabilidade & Políticas de Fail-Safe da Fase 1
+## 16. Orquestração, Observabilidade & Políticas de Fail-Safe da Fase 1
 
-### 15.1 Arquitetura Docker Compose & Rede Bridge Unificada (`agency-network`)
+### 16.1 Arquitetura Docker Compose & Rede Bridge Unificada (`agency-network`)
 A suíte inteira de microsserviços sobe orquestrada via Docker Compose com isolamento de rede e DNS interno:
-* **Rede Interna:** Driver bridge `agency-network`. Cada contêiner descobre os pares pelo hostname oficial do serviço (ex: `http://whatsapp-gateway:3005`, `http://payment-gateway:3006`, `http://guardrail-gateway:3007`, `http://knowledge-memory-gateway:3013`, `http://qdrant:6333`).
-* **Mapeamento de Portas:** Todas as portas (`:3005` a `:3013`, `:6333`, `:8000`, `:3001`, `:8888`) são mapeadas para `localhost` apenas para inspeção de desenvolvimento e reverse proxy.
+* **Rede Interna:** Driver bridge `agency-network`. Cada contêiner descobre os pares pelo hostname oficial do serviço (ex: `http://whatsapp-gateway:3005`, `http://payment-gateway:3006`, `http://guardrail-gateway:3007`, `http://knowledge-memory-gateway:3013`, `http://browser-gateway:3014`, `http://qdrant:6333`).
+* **Mapeamento de Portas:** Todas as portas (`:3005` a `:3014`, `:6333`, `:8000`, `:3001`, `:8888`) são mapeadas para `localhost` apenas para inspeção de desenvolvimento e reverse proxy.
 * **Políticas de Reinício:** Todos os contêineres rodam com `restart: unless-stopped`.
 * **Healthchecks Ativos:** Cada microsserviço define checagem periódica (`/health` a cada 10s com timeout de 3s e 3 retries). Se o processo travar ou vazar memória, o Docker restarta o contêiner automaticamente.
 
-### 15.2 Stack de Observabilidade Grafana + Loki (`:3001` e `:3100`)
+### 16.2 Stack de Observabilidade Grafana + Loki (`:3001` e `:3100`)
 Para monitorar a saúde, consumo de recursos e fluxo de requisições sem inspecionar múltiplos terminais:
-* **Loki (`:3100`):** Armazena e indexa logs de todos os 9 microsserviços e do `engine-core`.
-* **Promtail:** Agente daemon que coleta automaticamente o stdout/stderr de todos os contêineres Docker, injetando labels estruturadas (`service="whatsapp"`, `service="payment"`, `service="knowledge"`, `level="error"`, `correlation_id`).
+* **Loki (`:3100`):** Armazena e indexa logs de todos os 10 microsserviços e do `engine-core`.
+* **Promtail:** Agente daemon que coleta automaticamente o stdout/stderr de todos os contêineres Docker, injetando labels estruturadas (`service="whatsapp"`, `service="payment"`, `service="knowledge"`, `service="browser"`, `level="error"`, `correlation_id`).
 * **Grafana (`:3001`):** Interface visual unificada com dashboards pré-configurados:
   * Visão geral de latência de cada endpoint REST e ferramenta MCP.
   * Consumo de CPU e RAM por microsserviço.
   * Live tail de logs com filtro rápido por `correlation_id` e `lead_id`.
 
-### 15.3 Política Fail-Fast & Recuperação Automática de Gateways Críticos
+### 16.3 Política Fail-Fast & Recuperação Automática de Gateways Críticos
 Quando um gateway essencial apresenta instabilidade, a segurança operacional da software house prevalece sobre a continuidade:
 * **Gateways Críticos Monitorados:** `whatsapp-gateway` (:3005), `payment-gateway` (:3006) e `guardrail-gateway` (:3007).
 * **Ativação do Fail-Fast (Pausa Geral):** Se qualquer um dos 3 gateways críticos falhar consecutivamente no healthcheck ou retornar status `unhealthy`:
@@ -1105,7 +1214,7 @@ Quando um gateway essencial apresenta instabilidade, a segurança operacional da
   1. A esteira retoma automaticamente a operação das filas pausadas sem necessidade de comando manual.
   2. Um alerta verde é despachado para o Telegram de João: *"✅ Serviço [nome] restabelecido. Esteira operacional retomada com sucesso."*
 
-### 15.4 Sandbox Docker DooD (Docker-outside-of-Docker via `/var/run/docker.sock`)
+### 16.4 Sandbox Docker DooD (Docker-outside-of-Docker via `/var/run/docker.sock`)
 O microsserviço `workspace-sandbox-service` (:3010) adota o padrão **Docker-outside-of-Docker (DooD)**:
 * **Socket Montado:** Monta o socket do host (`/var/run/docker.sock`) em modo restrito dentro do contêiner `:3010`.
 * **Criação de Contêineres Irmãos:** Quando um agente de desenvolvimento compila código ou roda testes unitários (`npm test`), o microsserviço cria contêineres efêmeros irmãos (`node:20-slim`) diretamente no daemon do host.
