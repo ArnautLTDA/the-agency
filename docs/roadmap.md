@@ -115,11 +115,13 @@ Criação e padronização de todos os sentidos, braços operacionais e ferramen
   * Expõe **Servidor MCP via SSE** com ferramentas: `browser_screenshot`, `browser_inspect_console`, `browser_interact` e `browser_run_e2e_tests`.
   * Atendimento multi-persona: CRO (screenshots fidedignos de demos para WhatsApp), QA (inspeção de erros de console/rede e suítes E2E), Designer (testes responsivos mobile 375x812 e desktop 1920x1080) e Dev (validação de renderização/hidratação).
   * Arquitetura de pooling de `BrowserContext` efêmero: inicialização em <30ms, consumo médio de apenas ~180MB RAM e isolamento total de cookies/cache por teste.
-* **1.10 Orquestração, Observabilidade & Políticas de Fail-Safe:**
-  * Docker Compose unificado com rede interna bridge `agency-network`, DNS interno e healthchecks com auto-restart.
+* **1.10 Orquestração, Observabilidade, Segurança & Backups:**
+  * Docker Compose unificado com rede interna bridge `agency-network`, DNS interno e healthchecks com auto-restart e ordem estrita de boot (Infraestrutura -> Gateways -> Core).
   * Stack de observabilidade Grafana (`:3001`) + Loki (`:3100`) + Promtail coletando logs estruturados JSON de todos os 10 contêineres com dashboards pré-configurados.
-  * Política Fail-Fast com Pausa Emergencial imediata por queda de gateways críticos (`whatsapp`, `payment`, `guardrail`) e Auto-Retomada automática a cada 5s ao recuperar status `healthy`.
+  * Autenticação inter-serviços unificada via token secreto compartilhado `X-Agency-Key` em todos os endpoints REST e conexões MCP SSE.
+  * Política Fail-Fast com Pausa Emergencial por queda de gateways críticos (`whatsapp`, `payment`, `guardrail`), Degradação Parcial Controlada (`telegram`) e Auto-Retomada automática a cada 5s ao recuperar status `healthy`.
   * Sandbox Docker efêmero via DooD (`/var/run/docker.sock`) garantindo isolamento sem privilégios root de DinD.
+  * Rotina de backup atômico diário local às 03:00 com `sqlite3 VACUUM INTO` (sem locks no WAL) e snapshots nativos do Qdrant com política de retenção de 7 dias.
 
 ---
 

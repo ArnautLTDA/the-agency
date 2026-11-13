@@ -83,7 +83,9 @@ flowchart TD
         BROWSER_SVC["browser-gateway (:3014)<br/>Playwright Headless Browser MCP Server"]
     end
 
-    subgraph Armazenamento_Vetorial["Base Vetorial & Memória"]
+    %% Armazenamento Vetorial & Infra
+    subgraph Infraestrutura_Mensageria["Barramento AMQP & Vetorial"]
+        RABBIT_BUS["RabbitMQ AMQP Broker (:5672)<br/>agency.topic + DLX"]
         QDRANT_STORE[("Qdrant Vector Store (:6333)<br/>Multi-Tenant Collections")]
     end
 
@@ -92,7 +94,7 @@ flowchart TD
         DB[(pipeline.db<br/>SQLite WAL Mode)]
     end
 
-    %% MCP Protocol Calls
+    %% MCP Protocol Calls (Síncronas / RPC)
     CORE <-->|MCP JSON-RPC via SSE| WPP_SVC
     CORE <-->|MCP JSON-RPC via SSE| PAY_SVC
     CORE <-->|MCP JSON-RPC via SSE| TG_SVC
@@ -107,20 +109,24 @@ flowchart TD
     KNOW_SVC <-->|Embeddings & Busca Vetorial| QDRANT_STORE
     KNOW_SVC -.->|CRAG Web Fallback em Baixa Confiança| OSINT_SVC
 
-    %% Ingress Flow
+    %% Ingress Flow via Barramento RabbitMQ (Assíncrono)
     WPP <-->|WebSocket Criptografado| WPP_SVC
-    WPP_SVC -->|1. Ingress Webhook Mensagem Bruta| GUARD_SVC
-    GUARD_SVC -->|2. Transcrição se Áudio (.ogg)| GUARD_SVC
-    GUARD_SVC -->|3a. Mensagem Segura Validada| CORE
-    GUARD_SVC -.->|3b. Alerta de Injeção / Ataque| TG_SVC
+    WPP_SVC -->|1. Publica msg bruta| RABBIT_BUS
+    RABBIT_BUS -->|Fila whatsapp.raw| GUARD_SVC
+    GUARD_SVC -->|2. Transcrição Whisper se áudio + Llama Guard| GUARD_SVC
+    GUARD_SVC -->|3a. Se segura: publica whatsapp.inbound| RABBIT_BUS
+    RABBIT_BUS -->|Fila whatsapp.inbound| CORE
+    GUARD_SVC -.->|3b. Se maliciosa: publica telegram.alerts| RABBIT_BUS
+    RABBIT_BUS -.->|Fila telegram.alerts| TG_SVC
 
-    %% External APIs
+    %% External APIs & Webhooks Assíncronos
     OSINT_SVC -->|Validação onWhatsApp| WPP_SVC
     PAY_SVC <-->|mTLS OAuth2 + PIX| INTER_API
     GIT_SVC <-->|GitHub Token API & Git Push| GITHUB_API
     DEPLOY_SVC <-->|Deploy Preview/Prod & DB Provision| VERCEL_SUPABASE
     INTER_API -->|Webhook PIX Confirmado| PAY_SVC
-    PAY_SVC -->|Notificação de Liquidação| CORE
+    PAY_SVC -->|Publica evento payment.event.*| RABBIT_BUS
+    RABBIT_BUS -->|Fila payment.webhooks| CORE
 
     TG_SVC <-->|Alertas & Comandos /status| TELEGRAM_NET
     TG_SVC -->|Comandos de Gestão| CORE
@@ -175,18 +181,27 @@ Para proteger os números comerciais contra banimento algorítmico do WhatsApp:
 ### 4.1 Objetivo & Isolamento
 O microsserviço `guardrail-gateway` opera na porta `:3007` como um gateway de segurança e processamento de linguagem de ultra-baixa latência. Ele atua como um intermediário mandatório entre o recebimento de mensagens externas e o núcleo orquestrador.
 
-### 4.2 Endpoints REST do `guardrail-gateway` (:3007)
+### 4.2 Pipeline Assíncrono AMQP & Endpoints REST do `guardrail-gateway` (:3007)
+
+O Guardrail atua primariamente como **consumidor da fila AMQP `whatsapp.raw`** e expõe endpoints REST para inspeção sob demanda:
+
+* **Consumo Assíncrono (`whatsapp.raw`):**
+  1. O `whatsapp-gateway` (:3005) recebe mensagens do socket Baileys e publica imediatamente na fila RabbitMQ `whatsapp.raw`.
+  2. O `guardrail-gateway` consome o evento. Se o payload contiver áudio binário (`.ogg`), executa transcrição instantânea via Groq Whisper (`whisper-large-v3`) em < 500ms.
+  3. O texto resultante passa pela inspeção semântica profunda via Groq LPU (`llama-guard-3-8b`) em < 150ms.
+  4. **Se seguro (`is_safe=true`):** Publica a mensagem enriquecida na fila AMQP `whatsapp.inbound` para consumo determinístico pelo `engine-core` (:8000).
+  5. **Se malicioso (`is_safe=false`):** Descarta silenciosamente (zero feedback ao atacante), registra o incidente em `security_incidents` e publica alerta imediato na fila AMQP `telegram.alerts`.
 
 | Método | Endpoint | Parâmetros de Entrada | Descrição & Resposta |
 | :--- | :--- | :--- | :--- |
 | `POST` | `/api/v1/guardrail/inspect` | `{"sender_jid": "...", "text": "..."}` | Inspeciona o texto via Groq LPU (`llama-guard-3-8b`) em <150ms. Retorna `is_safe: boolean`, `threat_category`, `risk_score` e `action`. |
 | `POST` | `/api/v1/whisper/transcribe` | Multipart: arquivo binário `.ogg` | Transcreve mensagens de voz via Groq Whisper (`whisper-large-v3`) em <500ms. Retorna o texto transcrito e idioma detectado. |
-| `POST` | `/api/v1/inbound/whatsapp-webhook` | Payload de mensagem do Baileys | Endpoint receptor de webhooks do Baileys: transcreve se for áudio, inspeciona no Guardrail e, se seguro, repassa para o `engine-core` (`:8000`). Se inseguro, bloqueia silenciosamente e notifica o `telegram-gateway` (`:3008`). |
+| `POST` | `/api/v1/inbound/whatsapp-webhook` | Payload de mensagem do Baileys | Endpoint receptor de contingência HTTP REST: transcreve se for áudio, inspeciona no Guardrail e, se seguro, repassa para o Core. |
 
 ### 4.3 Política de Resposta & Reação Operacional do Guardrail
 1. **Bloqueio Silencioso:** Quando a mensagem é classificada como insegura/maliciosa, o microsserviço **não envia nenhuma resposta de erro ou feedback** pelo WhatsApp, evitando fornecer pistas sobre as heurísticas de proteção ao atacante.
 2. **Registro de Auditoria:** O incidente é registrado na tabela `security_incidents` com o JID/telefone do remetente, mensagem bruta, score de risco e timestamps.
-3. **Alerta Imediato no Telegram:** O `guardrail-gateway` despacha uma notificação imediata para o `telegram-gateway` (`:3008`) que alerta João detalhando telefone do remetente, categoria da ameaça e trecho ofensivo.
+3. **Alerta Imediato no Telegram:** O `guardrail-gateway` despacha uma notificação imediata para a fila `telegram.alerts` detalhando telefone do remetente, categoria da ameaça e trecho ofensivo.
 
 ---
 
@@ -195,13 +210,13 @@ O microsserviço `guardrail-gateway` opera na porta `:3007` como um gateway de s
 ### 5.1 Isolamento de Credenciais Bancárias & mTLS
 * **Stack:** Python FastAPI na porta `:3006`.
 * **Isolamento de Segredos:** Certificados mTLS (`inter.crt` e `inter.key`), Client ID e Client Secret residem exclusivamente no diretório restrito `certs/inter/`, confinados a este microsserviço. O orquestrador central (`:8000`) jamais acessa certificados bancários.
-* **Comunicação:** Opera via chamadas REST locais autenticadas por Bearer token interno.
+* **Comunicação:** Opera via chamadas REST locais e SSE MCP autenticadas obrigatoriamente pelo header de chave interna `X-Agency-Key`.
 
 ### 5.2 Endpoints REST & Interface MCP do `payment-gateway` (:3006)
 
 | Método / Interface | Endpoint | Parâmetros de Entrada | Descrição & Resposta |
 | :--- | :--- | :--- | :--- |
-| `POST` (REST) | `/api/v1/inter/webhook` | Webhook HTTPS oficial Banco Inter | Recebe confirmação de liquidação, valida autenticidade e notifica o `engine-core` (`:8000`). |
+| `POST` (REST) | `/api/v1/inter/webhook` | Webhook HTTPS oficial Banco Inter | Recebe confirmação de liquidação, valida autenticidade híbrida e publica evento no RabbitMQ (`payment.event.*`). |
 | `POST` (REST) | `/api/v1/mock/pix/pay/{txid}` | Path param `txid` | Endpoint exclusivo de testes (`MOCK_PAYMENTS=true`): simula liquidação bancária sem dinheiro real. |
 | `GET` (REST) | `/api/v1/banking/balance` | Query: `date` (opcional) | Consulta direta do saldo disponível, bloqueado e limite via API Banking v2. |
 | `GET` (REST) | `/api/v1/banking/statement` | Query: `start_date`, `end_date` | Consulta do extrato de movimentações e cálculo de faturamento bruto no período. |
@@ -231,6 +246,18 @@ O microsserviço `:3006` não apenas recebe pagamentos, mas atua como a **fonte 
 * **Escopo OAuth2:** Conexão mTLS consome o escopo `extrato.read` concedido no Internet Banking PJ do Banco Inter.
 * **Alimentação do Conselho Executivo:** Permite que agentes executivos monitorem metas de faturamento, liquidez em caixa e ponto de equilíbrio sem necessidade de intervenção humana ou compartilhamento de acessos ao aplicativo bancário.
 * **Comando Administrativo `/status`:** O bot do Telegram (`:3008`) consome a ferramenta `get_account_balance` para incluir o saldo líquido real em caixa nos relatórios periódicos enviados a João.
+
+### 5.5 Governança de Webhooks, Idempotência & Monitoramento de Certificados
+* **Validação Híbrida de Webhook:** Ao receber chamadas no endpoint `/api/v1/inter/webhook`, o gateway valida simultaneamente:
+  1. Header de segurança `x-webhook-key` contra o segredo compartilhado configurado no Internet Banking PJ.
+  2. Validação de IP de origem contra a Whitelist dos blocos de IP oficiais do Banco Inter.
+* **Idempotência Atômica por `txid`:** Para evitar processamento redundante ou duplicidade de avisos comemorativos em caso de retentativas do banco:
+  * O gateway consulta atomicamente o registro do `txid` na tabela `pix_transactions`.
+  * Se o status já for `CONCLUIDA`, o endpoint responde imediatamente `HTTP 200 {"status": "already_processed"}` e encerra o fluxo sem emitir novas mensagens AMQP.
+* **Monitoramento Preventivo de Expiração dos Certificados mTLS:**
+  * O microsserviço inspeciona o campo `notAfter` do certificado `inter.crt` durante o boot do contêiner e executa um cron diário às 09:00.
+  * Se a validade restante for **inferior a 30 dias**, publica automaticamente um alerta na fila `telegram.alerts`:
+    > *"⚠️ Alerta Financeiro: O certificado mTLS do Banco Inter (inter.crt) expira em X dias. Renove os certificados no Internet Banking PJ para evitar interrupção de cobranças."*
 
 ---
 
@@ -296,7 +323,8 @@ O serviço roda com `SCRAPER_PORT=3009`, persistindo suas tarefas de raspagem no
 * **`deep_research`**: Ferramenta composta que executa a busca no SearXNG e automaticamente faz a leitura profunda e extração em Markdown das top páginas mais relevantes em uma única operação.
   * **Parâmetros (`inputSchema`):**
     * `query` (string, obrigatório): Assunto a ser pesquisado e sintetizado.
-    * `top_n` (inteiro, opcional, padrão 3): Número de páginas de topo para minerar e consolidar.
+    * `top_n` (inteiro, opcional, padrão 5, máx 10): Número de páginas de topo para minerar e consolidar.
+  * **Governança de Limites & Memória:** Permite minerar até 10 fontes por pesquisa com timeout global rígido de 120 segundos e teto máximo de 1 MB de payload por página, gerando dossiês detalhados e ricos para qualificação de leads de alto valor sem risco de estouro de memória.
 
 ### 6.3 Pipeline de Integração, Qualificação & WhatsApp Verification
 A grande força de unir o `google-maps-scraper-kit` ao ecossistema da software house é o pipeline de qualificação prévia antes da abordagem:
@@ -386,7 +414,10 @@ Para evitar que agentes sofram bloqueios de 2FA (SMS/Authenticator), captchas in
 3. **Detecção de Sessão Expirada & Fail-Safe:**
    * Quando uma plataforma invalida a sessão (ex: redirecionamento para `/accounts/login/` no Instagram ou status 401 no LinkedIn), o gateway não entra em loop de retry.
    * Marca o cookie como `expired`, aborta a coleta daquele perfil com segurança e despacha notificação silenciosa para João via Telegram (`telegram-gateway`) para atualização do token.
-4. **Cadência e Rate Limiting Humanizado:**
+4. **Teste Sintético Periódico de Cookies (A cada 6 horas):**
+   * O microsserviço roda um cron leve a cada 6 horas realizando requisições canário para validar se as sessões salvas permanecem ativas.
+   * Se um cookie expirar, despacha alerta prioritário para a fila `telegram.alerts` avisando João preventivamente com instruções para colar o novo cookie sem interromper o serviço.
+5. **Cadência e Rate Limiting Humanizado:**
    * Delays aleatórios entre requisições de perfis sociais (mínimo de 4 a 12 segundos).
    * Semáforo limitador de no máximo 3 coletas sociais simultâneas para não disparar proteções de tráfego anômalo.
 
@@ -878,6 +909,10 @@ As seguintes tabelas de infraestrutura e governança persistem no mesmo arquivo 
 | **TC-159** | Happy Path | `browser-gateway (:3014)` | Inspeção de console e rede pré-deploy | Invocação MCP `browser_inspect_console` com URL de aplicação | Acessa a página, captura logs do console do navegador e falhas de rede HTTP, reportando `has_errors: false` para páginas saudáveis. | Alta |
 | **TC-160** | Happy Path | `browser-gateway (:3014)` | Execução de testes E2E com fluxo interativo | Invocação MCP `browser_interact` com sequência de cliques e preenchimento de inputs | Executa o fluxo de ponta a ponta (ex: agendamento), aguarda seletores com auto-wait e valida mensagem de sucesso. | Alta |
 | **TC-161** | Resilience | `browser-gateway (:3014)` | Recuperação de falha em renderização de página pesada | Acesso a página com crash de JavaScript ou timeout de carregamento | Gateway isola o browser context com timeout de 15s, encerra a aba travada sem afetar os outros microsserviços e retorna erro estruturado. | Alta |
+| **TC-162** | Resilience | `payment-gateway (:3006)` | Idempotência de Webhook PIX duplicado | Recebimento repetido de webhook de confirmação para o mesmo `txid` já liquidado | Gateway detecta que `txid` já está `CONCLUIDA`, responde HTTP 200 imediatamente e não re-emite alertas nem altera pipelines. | Alta |
+| **TC-163** | Stress / Load | `whatsapp-gateway (:3005)` + `guardrail-gateway (:3007)` | Carga concorrente de 50 mensagens inbound simultâneas no WhatsApp | 50 mensagens enviadas em rajada via socket Baileys | Mensagens enfileiradas na fila AMQP `whatsapp.raw` sem perda de pacotes, inspecionadas pelo Guardrail em pools assíncronos e processadas ordenadamente. | Alta |
+| **TC-164** | State / Lifecycle | `whatsapp-gateway (:3005)` | Ciclo de expiração e regeneração automática de QR Code | QR Code exibido e não escaneado por mais de 60 segundos | Baileys invalida o QR Code expirado, emite novo QR Code automaticamente e atualiza o endpoint `/api/v1/session/qr` sem travar a thread. | Média |
+| **TC-165** | Concurrency | `browser-gateway (:3014)` | Concorrência de pooling com 5+ Browser Contexts simultâneos | Invocação simultânea de 5 screenshots e testes E2E concorrentes | BrowserContexts efêmeros instanciados em paralelo sob o mesmo Chromium master sem colisão de cookies e consumo de RAM contido em < 350MB. | Alta |
 
 ---
 
@@ -1182,16 +1217,20 @@ Funcionalidade: Automação Web, Inspeção de Console e Testes E2E com Playwrig
   3. **Categorias Monitoradas:** Violações de segurança, tentativas de forçar personas desautorizadas, injeção de instruções de sistema e tentativa de extração de credenciais.
   4. **Ação de Bloqueio:** Mensagens classificadas como maliciosas são descartadas na borda, registrando evento em log de segurança e devolvendo resposta neutra de desvio ao remetente, sem consumir tokens do modelo cognitivo principal.
 
-### 15.2 SEC-021: Barramento AMQP Distribuído e Validação Rígida de Payloads (RabbitMQ)
+### 15.2 SEC-021: Barramento AMQP Distribuído, Separação MCP vs. AMQP e Validação de Payloads
 * **Contexto de Borda:** O RabbitMQ (introduzido na Fase 0 para fila local de tarefas) é expandido na Fase 1 para se tornar o **barramento central de mensageria assíncrona** entre todos os microsserviços e gateways.
+* **Separação Rígida de Responsabilidades: MCP (SSE) vs. RabbitMQ (AMQP):**
+  * **MCP via SSE (JSON-RPC 2.0):** É o canal exclusivo para **invocação síncrona e determinística de ferramentas pelos agentes** (`tools/call`). O agente necessita do retorno imediato do método para continuar seu raciocínio ReAct (ex: `read_file`, `git_commit`, `create_pix_charge`, `recall`, `browser_screenshot`).
+  * **RabbitMQ (AMQP Topic Exchange):** É o canal exclusivo para **eventos assíncronos, ingestão de tráfego externo e filas desacopladas**. Permite bufferizar picos de mensagens sem sobrecarregar a memória do orquestrador (ex: chegada de mensagens brutas do WhatsApp em `whatsapp.raw`, despacho de mensagens seguras em `whatsapp.inbound`, webhooks do Banco Inter em `payment.webhooks` e fila de alertas em `telegram.alerts`).
 * **Topologia de Exchanges e Queues AMQP:**
   * **Exchange Principal:** `agency.topic` (Topic Exchange durável).
   * **Roteamento de Filas:**
-    * `whatsapp.inbound` (binding: `whatsapp.msg.in.*`)
-    * `whatsapp.outbound` (binding: `whatsapp.msg.out.*`)
-    * `telegram.alerts` (binding: `telegram.alert.*`)
-    * `telegram.approvals` (binding: `telegram.approval.*`)
-    * `payment.webhooks` (binding: `payment.event.*`)
+    * `whatsapp.raw` (binding: `whatsapp.raw.*` — mensagens brutas direto do Baileys para o Guardrail)
+    * `whatsapp.inbound` (binding: `whatsapp.msg.in.*` — mensagens seguras e transcritas para o Core)
+    * `whatsapp.outbound` (binding: `whatsapp.msg.out.*` — mensagens a enviar pelo Humanizer)
+    * `telegram.alerts` (binding: `telegram.alert.*` — notificações operacionais e de segurança)
+    * `telegram.approvals` (binding: `telegram.approval.*` — solicitações de decisão pendente)
+    * `payment.webhooks` (binding: `payment.event.*` — confirmações de liquidação PIX)
   * **Dead-Letter Exchange (DLX):** `agency.dlx` com fila `agency.poison_messages` para capturar e isolar mensagens malformadas ou com falhas persistentes após 3 tentativas de entrega.
 * **Governança de Tipagem e Teto de Payload:**
   * Todas as mensagens inter-serviços devem obrigatoriamente encapsular um envelope Pydantic/TypeScript padronizado:
@@ -1218,14 +1257,28 @@ Funcionalidade: Automação Web, Inspeção de Console e Testes E2E com Playwrig
   * Na Fase 1, essas ferramentas são **completamente migradas e desacopladas** para o microsserviço autônomo **`workspace-sandbox-service` (Porta `:3010`)**.
   * O `engine-core` elimina o código nativo de filesystem e executa essas ações estritamente como **MCP Client** via JSON-RPC 2.0 SSE, isolando o processo orquestrador do daemon Docker e do sistema de arquivos local.
 
+### 15.5 SEC-026: Autenticação Inter-Serviços Unificada (Token X-Agency-Key)
+* **Padrão de Autenticação na Rede Interna:** Todos os 10 microsserviços e o orquestrador compartilham uma chave secreta interna injetada via variável de ambiente confidencial (`AGENCY_SECRET_KEY`) no `docker-compose.yml`.
+* **Validação Mandatória de Headers:**
+  * 100% dos endpoints REST (incluindo rotas administrativas sensíveis como `/api/v1/session/logout` no `whatsapp-gateway`) e todas as conexões MCP SSE (`/sse`) exigem o header HTTP:
+    ```http
+    X-Agency-Key: <AGENCY_SECRET_KEY>
+    ```
+  * Requisições internas sem o header ou com chave inválida são rejeitadas imediatamente com `HTTP 401 Unauthorized`.
+  * Isso blinda a malha contra comandos espúrios ou injeções locais caso outros processos sejam executados no host.
+
 ---
 
 ## 16. Orquestração, Observabilidade & Políticas de Fail-Safe da Fase 1
 
-### 16.1 Arquitetura Docker Compose & Rede Bridge Unificada (`agency-network`)
+### 16.1 Arquitetura Docker Compose, Rede Bridge & Ordem de Boot (`agency-network`)
 A suíte inteira de microsserviços sobe orquestrada via Docker Compose com isolamento de rede e DNS interno:
 * **Rede Interna:** Driver bridge `agency-network`. Cada contêiner descobre os pares pelo hostname oficial do serviço (ex: `http://whatsapp-gateway:3005`, `http://payment-gateway:3006`, `http://guardrail-gateway:3007`, `http://knowledge-memory-gateway:3013`, `http://browser-gateway:3014`, `http://qdrant:6333`).
-* **Mapeamento de Portas:** Todas as portas (`:3005` a `:3014`, `:6333`, `:8000`, `:3001`, `:8888`) são mapeadas para `localhost` apenas para inspeção de desenvolvimento e reverse proxy.
+* **Mapeamento de Portas:** Todas as portas (`:3005` a `:3014`, `:6333`, `:8000`, `:3001`, `:8888`, `:5672`, `:15672`) são mapeadas para `localhost` apenas para inspeção de desenvolvimento e reverse proxy.
+* **Ordem de Inicialização (Boot Sequence com Healthchecks):**
+  1. **Camada 1 (Infraestrutura Base):** `rabbitmq` (:5672), `qdrant` (:6333) e `searxng` (:8888) inicializam primeiro com healthchecks ativos.
+  2. **Camada 2 (Gateways & Servidores MCP):** Os 10 microsserviços sobem utilizando `depends_on: { rabbitmq: { condition: service_healthy } }`.
+  3. **Camada 3 (Orquestrador Core):** O `engine-core` (:8000) sobe por último, conectando-se aos endpoints `/sse` de cada gateway com auto-discovery dinâmico.
 * **Políticas de Reinício:** Todos os contêineres rodam com `restart: unless-stopped`.
 * **Healthchecks Ativos:** Cada microsserviço define checagem periódica (`/health` a cada 10s com timeout de 3s e 3 retries). Se o processo travar ou vazar memória, o Docker restarta o contêiner automaticamente.
 
@@ -1238,14 +1291,18 @@ Para monitorar a saúde, consumo de recursos e fluxo de requisições sem inspec
   * Consumo de CPU e RAM por microsserviço.
   * Live tail de logs com filtro rápido por `correlation_id` e `lead_id`.
 
-### 16.3 Política Fail-Fast & Recuperação Automática de Gateways Críticos
+### 16.3 Política Fail-Fast & Degradação Parcial Controlada
 Quando um gateway essencial apresenta instabilidade, a segurança operacional da software house prevalece sobre a continuidade:
-* **Gateways Críticos Monitorados:** `whatsapp-gateway` (:3005), `payment-gateway` (:3006) e `guardrail-gateway` (:3007).
-* **Ativação do Fail-Fast (Pausa Geral):** Se qualquer um dos 3 gateways críticos falhar consecutivamente no healthcheck ou retornar status `unhealthy`:
-  1. O `engine-core` aciona o estado de **Pausa Emergencial**.
-  2. Todas as abordagens ativas no WhatsApp, prospecções frias e negociações são suspensas instantaneamente para evitar mensagens quebradas ou falhas de cobrança.
-  3. O `telegram-gateway` (:3008) despacha alerta vermelho com prioridade máxima para João detalhando o microsserviço causador e o motivo da queda.
-* **Auto-Retomada Automática:** O `engine-core` mantém um loop de sondagem a cada 5 segundos. Assim que o contêiner Docker recupera o serviço e o healthcheck retorna `healthy`:
+* **Gateways Críticos de Pausa Emergencial Total:** `whatsapp-gateway` (:3005), `payment-gateway` (:3006) e `guardrail-gateway` (:3007).
+  * Se qualquer um dos 3 falhar consecutivamente no healthcheck ou retornar `unhealthy`:
+    1. O `engine-core` aciona o estado de **Pausa Emergencial**.
+    2. Todas as abordagens ativas no WhatsApp, prospecções frias e negociações são suspensas instantaneamente para evitar mensagens quebradas ou falhas de cobrança.
+    3. O `telegram-gateway` (:3008) despacha alerta vermelho com prioridade máxima para João detalhando o microsserviço causador e o motivo da queda.
+* **Degradação Parcial Controlada (`telegram-gateway :3008`):**
+  * Se o Telegram cair temporariamente, a esteira **não paralisa** as operações comerciais nem a fábrica de software.
+  * Os alertas operacionais continuam sendo produzidos e são retidos com segurança na fila persistente AMQP `telegram.alerts` do RabbitMQ.
+  * Apenas tarefas que dependem de aprovação humana de João (`request_owner_approval`) são retidas aguardando a volta do bot.
+* **Auto-Retomada Automática:** O `engine-core` mantém um loop de sondagem a cada 5 segundos. Assim que o contêiner Docker recupera o serviço crítico e o healthcheck retorna `healthy`:
   1. A esteira retoma automaticamente a operação das filas pausadas sem necessidade de comando manual.
   2. Um alerta verde é despachado para o Telegram de João: *"✅ Serviço [nome] restabelecido. Esteira operacional retomada com sucesso."*
 
@@ -1257,4 +1314,19 @@ O microsserviço `workspace-sandbox-service` (:3010) adota o padrão **Docker-ou
   * **Segurança Reforçada:** Dispensa a flag perigosa `--privileged` exigida pelo Docker-in-Docker tradicional.
   * **Performance & Cache:** Compartilha o cache de imagens do host, acelerando a inicialização de containers efêmeros para menos de 300ms.
   * **Isolamento Estrito:** Os contêineres efêmeros montam apenas o diretório do workspace do cliente, rodam sem acesso à rede externa e são destruídos com flag `--rm` imediatamente após a execução.
+
+### 16.5 Política de Backup Local Atômico Diário & Snapshots Qdrant
+Para blindar o banco relacional e a base vetorial contra corrupção ou falhas de disco sem interromper a esteira:
+* **Snapshot Atômico do SQLite (`pipeline.db`):**
+  * Cron diário executado às 03:00 aciona o snapshot em quente através da instrução soberana do SQLite:
+    ```bash
+    sqlite3 /database/pipeline.db "VACUUM INTO '/storage/backups/sqlite/pipeline-$(date +%Y%m%d_%H%M%S).db'"
+    ```
+  * O comando `VACUUM INTO` cria um clone idêntico e compactado do banco sem bloquear leituras ou escritas concorrentes no modo WAL.
+* **Snapshots Nativos do Qdrant:**
+  * Script de backup dispara chamada na API local do Qdrant (`POST /collections/{collection_name}/snapshots`) para exportar o estado exato dos índices HNSW e vetores.
+  * Os arquivos de snapshot gerados são salvos em `/storage/backups/qdrant/`.
+* **Retenção & Rotação de Backups:**
+  * Backups são compactados em arquivos `.tar.gz`.
+  * Política de retenção fixa de **7 dias**: arquivos com mais de 7 dias são automaticamente expurgados (`find /storage/backups/ -mtime +7 -delete`), preservando espaço em disco no servidor.
 
