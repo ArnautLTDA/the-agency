@@ -185,6 +185,16 @@ Para proteger os números comerciais contra banimento algorítmico do WhatsApp:
 * **Sessão Deslogada (`logged_out`):** O gateway emite imediatamente um evento Webhook para o microsserviço `telegram-gateway` com status `CRITICAL_SESSION_LOGGED_OUT`, disparando alerta de alta prioridade para João contendo a notificação para escanear novo QR Code.
 * **Detecção de Banimento / Bloqueio de Linha:** Ao receber erro de autorização definitiva (código 403 / banned), o gateway sinaliza o evento ao orquestrador central, que pausa imediatamente todas as rotinas ativas de prospecção e alerta o Telegram de João com severidade máxima.
 
+### 3.5 Consumo Assíncrono da Fila AMQP (`whatsapp.outbound`)
+Além de responder a chamadas síncronas de ferramentas MCP (`send_whatsapp_message`), o `whatsapp-gateway` opera como **consumidor durável da fila AMQP `whatsapp.outbound`**:
+* **Desacoplamento de Campanhas:** O orquestrador central ou agentes comerciais podem postar lotes de mensagens de prospecção ou follow-up na fila sem reter o ciclo ReAct.
+* **Execução Cadenciada com Humanizer:** O worker consome as mensagens da fila e aplica ordenadamente as regras do módulo `humanizer`:
+  1. Verifica se está dentro da janela comercial (08:30 às 18:30); caso contrário, retém a mensagem até o próximo dia útil.
+  2. Aguarda a hesitação randômica (3-8s).
+  3. Emite o status "digitando..." proporcional (30ms/char, máx 15s).
+  4. Despacha a mensagem pelo socket Baileys.
+  5. Aplica a pausa obrigatória de 15 a 45 segundos antes de consumir a próxima mensagem da fila para destinos distintos, blindando o número contra bloqueios algorítmicos.
+
 ---
 
 ## 4. Especificação do Guardrail & Transcrição Microservice (`:3007`)
@@ -980,7 +990,7 @@ As seguintes tabelas de infraestrutura e governança persistem no mesmo arquivo 
 | **TC-146** | Happy Path | `payment-gateway (:3006)` | Consolidação de métricas de faturamento por período | Invocação MCP `get_billing_metrics` com `start_date="2026-11-01"`, `end_date="2026-11-30"` | Consulta extrato oficial, consolida créditos recebidos, calcula faturamento bruto e ticket médio sem expor credenciais bancárias. | Alta |
 | **TC-147** | Resilience | `engine-core (:8000)` | Ativação de Pausa Emergencial (Fail-Fast) por queda de gateway crítico | Healthcheck de gateway crítico (`whatsapp`, `payment` ou `guardrail`) retorna `unhealthy` | Orquestrador suspende imediatamente abordagens ativas, congela filas comerciais e despacha alerta de emergência no Telegram de João. | Crítica |
 | **TC-148** | Resilience | `engine-core (:8000)` | Auto-retomada da esteira após recuperação de saúde | Gateway crítico recuperado pelo Docker transiciona de volta para `healthy` | Orquestrador detecta restauração no loop de 5s, retoma as filas operacionais e envia notificação de normalização no Telegram. | Alta |
-| **TC-149** | Observability | Stack Grafana Loki | Coleta e indexação de logs unificados dos microsserviços | Containers gravando logs estruturados JSON no stdout | Promtail captura logs de todos os 9 microsserviços e disponibiliza para busca e dashboards no Grafana (:3001) e Loki (:3100). | Alta |
+| **TC-149** | Observability | Stack Grafana Loki | Coleta e indexação de logs unificados dos microsserviços | Containers gravando logs estruturados JSON no stdout | Promtail captura logs de todos os 11 microsserviços e do engine-core, disponibilizando busca e dashboards no Grafana (:3001) e Loki (:3100). | Alta |
 | **TC-150** | Security | `workspace-sandbox-service (:3010)` | Execução de sandbox efêmera via DooD seguro | Invocação MCP `run_terminal_command` montando `/var/run/docker.sock` | Container cria contêiner irmão `node:20-slim` com limites estritos (2GB RAM, 1.5 CPUs, rede desabilitada) e o destrói ao finalizar. | Crítica |
 | **TC-151** | Happy Path | `knowledge-memory-gateway (:3013)` | Recuperação semântica local com alta confiança (CRAG Correct) | Invocação MCP `recall` com `query="padrão de rota API Next.js 15"` e `namespace="dev"` | Qdrant retorna fragmentos locais, BGE-Reranker avalia com score >= 0.80 e devolve resposta em < 25ms sem acionar web. | Alta |
 | **TC-152** | Happy Path | `knowledge-memory-gateway (:3013)` | Fallback automático para a Web em baixa confiança (CRAG Incorrect) | Invocação MCP `recall` com termo inédito inexistente no banco local | BGE-Reranker avalia score < 0.50, aciona SearXNG (:3009), extrai páginas com ruyijs, filtra *Knowledge Strips* e entrega dados com flag `source: "web_crag"`. | Alta |
@@ -1133,7 +1143,7 @@ Funcionalidade: Controle Remoto e Alertas no Microsserviço Telegram (:3008)
   Cenário: Consulta de saúde agregada de todos os microsserviços
     Dado que o microsserviço "telegram-gateway" está ativo na porta 3008
     Quando João envia o comando "/status" no chat do Telegram
-    Então o microsserviço deve consultar a saúde das portas 8000, 3005, 3006, 3007, 3009 e 3010
+    Então o microsserviço deve consultar a saúde agregada das portas 8000, 3005 a 3015, 9000, 6333, 8888, 5672, 3001 e 3100
     E deve responder com relatório formatado contendo o status de cada serviço, cotação do Dólar e saldo em caixa
 
   Cenário: Pausa emergencial da operação da agência
