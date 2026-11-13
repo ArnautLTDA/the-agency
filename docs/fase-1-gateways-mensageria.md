@@ -31,7 +31,7 @@ Apenas especificações arquiteturais, regras e contratos conceituais (zero cód
 
 ## 2. Topologia Geral de Servidores MCP & Portas (A Caixa 100% Fechada)
 
-A esteira consolida toda a sua malha operacional em 10 servidores MCP desacoplados e independentes:
+A esteira consolida toda a sua malha operacional em 11 servidores MCP desacoplados e independentes:
 
 | Serviço / Microsserviço | Porta Local | Papel na Arquitetura MCP | Ferramentas MCP Expostas (`tools/list`) |
 | :--- | :--- | :--- | :--- |
@@ -46,11 +46,14 @@ A esteira consolida toda a sua malha operacional em 10 servidores MCP desacoplad
 | **`deploy-cloud-gateway`** | `:3012` | **Cloud & Deploy MCP Server** (Python FastAPI) | `deploy_preview_demo` (demos livres Vercel), `deploy_production` (gate de QA + Segurança + PIX pago), `get_deployment_status`, `provision_database` (Supabase Postgres), `set_project_env_vars`. |
 | **`knowledge-memory-gateway`** | `:3013` | **Knowledge, Memory & CRAG MCP Server** (Python FastAPI) | `recall`, `remember`, `forget`, `ingest_document`, `get_project_context`. Qdrant (:6333) + FastEmbed BGE + BGE-Reranker-v2-m3 (CRAG com fallback SearXNG :3009). |
 | **`browser-gateway`** | `:3014` | **Browser Automation & Viewport MCP Server** (Python FastAPI / Playwright) | `browser_screenshot`, `browser_inspect_console`, `browser_interact`, `browser_run_e2e_tests`. Automação completa Chromium/Firefox headless com emulação de viewport e traces. |
+| **`security-audit-gateway`** | `:3015` | **Security Audit & Code Quality MCP Server** (Python FastAPI) | `run_sonarqube_scan`, `scan_secrets` (Gitleaks), `scan_sast_semgrep` (Semgrep), `scan_dependencies` (Trivy), `run_dast_scan` (Nuclei), `get_security_gate_status`. Auditoria estática e dinâmica completa com Quality Gate. |
 
 ### Infraestrutura de Suporte & Armazenamento:
 
 | Serviço de Infraestrutura | Porta Local | Papel na Infraestrutura | Tecnologia / Detalhes |
 | :--- | :--- | :--- | :--- |
+| **`sonarqube`** | `:9000` | Motor Central de Análise Estática & Quality Gates | SonarQube Community Edition em Docker com regras de bugs, vulnerabilidades, hotspots e cobertura. |
+| **`sonarqube-db`** | `:5432` | Banco Relacional Dedicado do SonarQube | PostgreSQL 15 oficial persistindo histórico de análises, regras e métricas de qualidade. |
 | **`qdrant`** | `:6333` | Armazenamento Vetorial & Busca Semântica | Qdrant em Docker com persistência em disco, índices HNSW e isolamento multi-tenant por agente e projeto. |
 | **`searxng`** | `:8888` | Meta-Buscador Web Open-Source | Instância local privada anonimizada agregando 70+ provedores sem limite de requisições ou vazamento de IP. |
 | **`rabbitmq`** | `:5672` / `:15672` | Barramento AMQP Distribuído | Mensageria assíncrona, filas de dead-letter (`agency.dlx`), porta 5672 para conexões e 15672 para painel web. |
@@ -81,12 +84,14 @@ flowchart TD
         DEPLOY_SVC["deploy-cloud-gateway (:3012)<br/>FastAPI + Vercel/Supabase Deploy MCP Server"]
         KNOW_SVC["knowledge-memory-gateway (:3013)<br/>Qdrant + FastEmbed + BGE CRAG MCP Server"]
         BROWSER_SVC["browser-gateway (:3014)<br/>Playwright Headless Browser MCP Server"]
+        SEC_SVC["security-audit-gateway (:3015)<br/>SonarQube + SAST/DAST MCP Server"]
     end
 
     %% Armazenamento Vetorial & Infra
-    subgraph Infraestrutura_Mensageria["Barramento AMQP & Vetorial"]
+    subgraph Infraestrutura_Mensageria["Barramento AMQP & Infraestrutura"]
         RABBIT_BUS["RabbitMQ AMQP Broker (:5672)<br/>agency.topic + DLX"]
         QDRANT_STORE[("Qdrant Vector Store (:6333)<br/>Multi-Tenant Collections")]
+        SONAR_STORE[("SonarQube Server (:9000)<br/>Postgres (:5432) + Quality Gate")]
     end
 
     subgraph Orquestrador["Núcleo Orquestrador Central"]
@@ -104,6 +109,12 @@ flowchart TD
     CORE <-->|MCP JSON-RPC via SSE| DEPLOY_SVC
     CORE <-->|MCP JSON-RPC via SSE| KNOW_SVC
     CORE <-->|MCP JSON-RPC via SSE| BROWSER_SVC
+    CORE <-->|MCP JSON-RPC via SSE| SEC_SVC
+
+    %% Security & SonarQube Flow
+    SEC_SVC <-->|Análise & Quality Gate| SONAR_STORE
+    DEPLOY_SVC -.->|Validação de Gate de Segurança| SEC_SVC
+    GIT_SVC -.->|Secret Scanning Pré-Commit| SEC_SVC
 
     %% Knowledge & CRAG Flow
     KNOW_SVC <-->|Embeddings & Busca Vetorial| QDRANT_STORE
@@ -443,7 +454,7 @@ Para evitar que agentes sofram bloqueios de 2FA (SMS/Authenticator), captchas in
 * **`request_owner_approval`**: Envia notificação de decisão pendente para João com botões de aprovação/rejeição rápida no chat privado. Parâmetros: `decision_type` (string), `details` (string), `lead_id` (inteiro opcional).
 
 ### 7.3 Comandos Suportados no Telegram de João
-* `/status`: Consulta a saúde agregada de todos os servidores MCP e infraestruturas (`:8000`, `:3005` a `:3014`, `:6333`, `:8888`, `:5672`, `:3001`, `:3100`) e exibe saldo e agentes ativos.
+* `/status`: Consulta a saúde agregada de todos os servidores MCP e infraestruturas (`:8000`, `:3005` a `:3015`, `:9000`, `:6333`, `:8888`, `:5672`, `:3001`, `:3100`) e exibe saldo e agentes ativos.
 * `/pausar`: Suspende imediatamente os disparos de mensagens ativas e tarefas de mineração.
 * `/retomar`: Restabelece a operação normal da esteira.
 * `/aprovar <lead_id>`: Concede aprovação humana para avanço de etapa no modo de calibragem assistida.
@@ -766,11 +777,73 @@ O `browser-gateway` não é exclusivo de QA, sendo consumido por 4 agentes funda
 
 ---
 
-## 13. Esquemas de Banco de Dados da Fase 1 (SQLite WAL Mode)
+## 13. Especificação do Security Audit & Code Quality Gateway — SonarQube & SAST/DAST (`:3015`)
+
+### 13.1 Papel Operacional & Suíte de Motores
+O microsserviço `security-audit-gateway` opera na porta `:3015` e provê auditoria estática e dinâmica completa de código, qualidade e governança cibernética para todos os agentes da software house (especialmente `Security Agent`, `QA Agent` e `Dev Agent`).
+Ele encapsula uma suíte integrada de 5 motores de classe enterprise:
+
+1. **SonarQube Community Edition (`:9000` via Docker):**
+   * Análise estática profunda (SAST), débitos técnicos, code smells, duplicação e cobertura de código.
+   * Aplicação do **Quality Gate** oficial (reprovação automática se houver vulnerabilidades críticas ou cobertura < 80%).
+2. **Gitleaks (Secret Scanning Pré-Commit/Push):**
+   * Scanner ultrarrápido (< 2s) que varre repositórios e diffs em busca de chaves de API, senhas, tokens e certificados vazados.
+3. **Semgrep (SAST Semântico OWASP Top 10):**
+   * Varredura semântica rápida (segundos) focada em vulnerabilidades críticas de código (SQL Injection, XSS, SSRF, desserialização insegura).
+4. **Trivy / OSV-Scanner (Software Composition Analysis - SCA):**
+   * Auditoria de manifestos de pacotes (`package.json`, `package-lock.json`, `requirements.txt`) detectando CVEs ativas em dependências.
+5. **Nuclei (DAST / Pentest Dinâmico Automatizado):**
+   * Scanner de vulnerabilidades dinâmico que dispara testes reais de cabeçalhos (CORS, CSP, HSTS) e endpoints na URL de preview/staging gerada na Vercel antes do deploy oficial.
+
+### 13.2 Endpoints REST & Interface MCP do `security-audit-gateway` (:3015)
+
+| Método / Interface | Endpoint | Parâmetros de Entrada | Descrição & Resposta |
+| :--- | :--- | :--- | :--- |
+| `GET` (REST) | `/api/v1/health` | Nenhum | Retorna o status de conectividade com o SonarQube (`:9000`), integridade dos scanners e memória. |
+| `GET` (MCP SSE) | `/sse` | Conexão SSE | Canal de comunicação MCP JSON-RPC 2.0 para auditoria de segurança e conferência de gates. |
+
+#### Catálogo de Ferramentas MCP Expostas (`tools/list`):
+* **`run_sonarqube_scan`**: Dispara a análise do SonarScanner no workspace do cliente, aguarda a compilação do relatório e avalia o Quality Gate oficial.
+  * **Parâmetros (`inputSchema`):**
+    * `workspace_id` (string, obrigatório): Identificador do workspace.
+    * `project_key` (string, obrigatório): Chave identificadora do projeto no SonarQube.
+  * **Retorno:** Objeto com `quality_gate_status` (`PASSED` | `FAILED`), `bugs_count`, `vulnerabilities_count`, `security_hotspots_count`, `code_smells_count`, `coverage_percentage` e `dashboard_url`.
+* **`scan_secrets`**: Roda o Gitleaks no workspace ou na branch atual para detectar vazamento de credenciais, chaves e tokens antes de commits ou pushes.
+  * **Parâmetros (`inputSchema`):**
+    * `workspace_id` (string, obrigatório): Identificador do workspace.
+    * `diff_only` (boolean, opcional, padrão true): Se true, varre apenas as alterações ainda não commitadas no git diff.
+  * **Retorno:** Objeto com `leaks_found: boolean`, `findings_count`, `findings` (array contendo arquivo, linha, regra violada e secret mascarado).
+* **`scan_sast_semgrep`**: Executa o Semgrep com rulesets do OWASP Top 10 no código-fonte para detecção ágil de falhas de segurança.
+  * **Parâmetros (`inputSchema`):**
+    * `workspace_id` (string, obrigatório): Identificador do workspace.
+    * `rule_set` (string, opcional, padrão `"p/owasp-top-ten"`): Catálogo de regras semânticas.
+  * **Retorno:** Objeto com `vulnerabilities_count`, `findings` (array com severidade, arquivo, linha, mensagem e remediação recomendada).
+* **`scan_dependencies`**: Executa o Trivy nos arquivos de dependências procurando pacotes desatualizados ou com CVEs ativas.
+  * **Parâmetros (`inputSchema`):**
+    * `workspace_id` (string, obrigatório): Identificador do workspace.
+    * `severity_threshold` (string, opcional, padrão `"HIGH"`): Nível de corte (`"MEDIUM"`, `"HIGH"`, `"CRITICAL"`).
+  * **Retorno:** Objeto com `vulnerable_packages_count`, `cves` (array com nome do pacote, versão atual, versão corrigida, CVE ID e score CVSS).
+* **`run_dast_scan`**: Dispara o Nuclei contra uma URL pública efêmera de demonstração ou staging gerada na Vercel.
+  * **Parâmetros (`inputSchema`):**
+    * `target_url` (string, obrigatório): Endereço URL público a testar.
+    * `scan_profile` (string, opcional, padrão `"web-basic"`): Perfil de testes (`"headers-ssl"`, `"owasp-top-ten"`, `"cve-exposure"`).
+  * **Retorno:** Objeto com `vulnerabilities_count`, `issues` (array com endpoint testado, tipo de vulnerabilidade e evidência).
+* **`get_security_gate_status`**: Avaliação agregada do Gate de Segurança consumida pelo `deploy-cloud-gateway` (:3012) para aprovação de produção.
+  * **Parâmetros (`inputSchema`):**
+    * `workspace_id` (string, obrigatório): Identificador do workspace.
+  * **Retorno:** Objeto com `security_approved: boolean`, `sonar_status`, `secrets_clean: boolean`, `critical_cves_count`, `failed_checks` (array de motivos de reprovação).
+
+### 13.3 Integração com o Gate Triplo de Deploy & VCS
+1. **Trava no Git VCS Gateway (`:3011`):** Antes de gravar qualquer commit ou fazer push remoto de branch, o `git-vcs-gateway` invoca a ferramenta MCP `scan_secrets`. Se houver qualquer segredo detectado, a operação Git é abortada na hora.
+2. **Trava no Deploy Cloud Gateway (`:3012`):** A ferramenta `deploy_production` invoca `get_security_gate_status`. Se `security_approved` for `false`, o deploy em domínio oficial é sumariamente bloqueado, mantendo o lead em homologação até a autocorreção pelo Dev Agent.
+
+---
+
+## 14. Esquemas de Banco de Dados da Fase 1 (SQLite WAL Mode)
 
 O banco de dados central `pipeline.db` operado em modo WAL persiste os dados operacionais de toda a malha de microsserviços. Os esquemas abaixo complementam as tabelas de infraestrutura fundamental do motor estabelecidas na Fase 0:
 
-### 13.1 Tabela `leads` (Entidade Central de Negócio da Esteira)
+### 14.1 Tabela `leads` (Entidade Central de Negócio da Esteira)
 * `id` (TEXT PRIMARY KEY) — Identificador único do lead (slug ou UUID).
 * `name` (TEXT NOT NULL) — Nome comercial do estabelecimento.
 * `niche` (TEXT NOT NULL) — Segmento de atuação (ex: `clinicas`, `barbearias`, `restaurantes`).
@@ -784,7 +857,7 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 * `updated_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 
-### 13.2 Tabela `security_incidents` (Auditoria do Guardrail :3007)
+### 14.2 Tabela `security_incidents` (Auditoria do Guardrail :3007)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `sender_jid` (TEXT NOT NULL) — Telefone ou identificador do remetente.
 * `raw_message` (TEXT NOT NULL) — Conteúdo bruto da mensagem inspecionada.
@@ -793,7 +866,7 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `action_taken` (TEXT NOT NULL) — Ação aplicada (`SILENT_DROP`, `BLOCKED`).
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 
-### 13.3 Tabela `pix_transactions` (Transações do Payment Gateway :3006)
+### 14.3 Tabela `pix_transactions` (Transações do Payment Gateway :3006)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `txid` (TEXT UNIQUE NOT NULL) — Identificador único da transação registrado no BACEN.
 * `lead_id` (TEXT NOT NULL) — Identificador do lead associado (Foreign Key referenciando `leads.id`).
@@ -804,7 +877,7 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 * `paid_at` (TIMESTAMP) — Data e hora exata da liquidação.
 
-### 13.4 Tabela `telegram_audit_logs` (Auditoria do Telegram Gateway :3008)
+### 14.4 Tabela `telegram_audit_logs` (Auditoria do Telegram Gateway :3008)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `direction` (TEXT NOT NULL) — Direção da mensagem (`OUTBOUND_ALERT`, `INBOUND_COMMAND`).
 * `command` (TEXT) — Comando emitido pelo administrador (ex: `/status`, `/pausar`).
@@ -812,7 +885,7 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `status` (TEXT NOT NULL) — Status de entrega ou execução (`SENT`, `EXECUTED`, `REJECTED`).
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 
-### 13.5 Tabela `git_audit_logs` (Auditoria do Git VCS Gateway :3011)
+### 14.5 Tabela `git_audit_logs` (Auditoria do Git VCS Gateway :3011)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `workspace_id` (TEXT NOT NULL) — Identificador do projeto.
 * `action` (TEXT NOT NULL) — Ação executada (`COMMIT`, `BRANCH_CREATE`, `PR_CREATE`, `PUSH`).
@@ -822,7 +895,7 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `message` (TEXT) — Mensagem convencional de commit ou título de PR.
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 
-### 13.6 Tabela `deployments` (Auditoria do Cloud & Deploy Gateway :3012)
+### 14.6 Tabela `deployments` (Auditoria do Cloud & Deploy Gateway :3012)
 * `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
 * `lead_id` (TEXT NOT NULL) — Identificador do cliente (Foreign Key referenciando `leads.id`).
 * `workspace_id` (TEXT NOT NULL) — Workspace do projeto.
@@ -834,7 +907,18 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `payment_cleared` (BOOLEAN DEFAULT FALSE) — Confirmação de liquidação financeira.
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 
-### 13.7 Referência Cruzada às Tabelas do Motor Central (Fase 0)
+### 14.7 Tabela `security_audits` (Auditoria do Security Gateway :3015)
+* `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
+* `lead_id` (TEXT NOT NULL) — Identificador do cliente (Foreign Key referenciando `leads.id`).
+* `workspace_id` (TEXT NOT NULL) — Workspace auditado.
+* `scan_type` (TEXT NOT NULL) — Tipo de scanner executado (`SONARQUBE`, `GITLEAKS`, `SEMGREP`, `TRIVY`, `NUCLEI`).
+* `status` (TEXT NOT NULL) — Resultado da auditoria (`PASSED`, `FAILED`, `WARNING`).
+* `critical_count` (INTEGER DEFAULT 0) — Quantidade de falhas críticas encontradas.
+* `high_count` (INTEGER DEFAULT 0) — Quantidade de falhas de severidade alta.
+* `report_summary` (TEXT NOT NULL) — Resumo textual do resultado e débitos técnicos.
+* `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+
+### 14.8 Referência Cruzada às Tabelas do Motor Central (Fase 0)
 As seguintes tabelas de infraestrutura e governança persistem no mesmo arquivo `pipeline.db` e foram especificadas na Fase 0 (`docs/fase-0-motor-agentes.md` e `docs/fase-0-remediacao-hardening.md`):
 * **`agent_messages`**: Mensagens de loop de raciocínio, pensamentos, tool calls e tool results dos agentes.
 * **`audit_logs`**: Trilha de auditoria cronológica imutável de todas as ações e chamadas operacionais da esteira.
@@ -842,9 +926,9 @@ As seguintes tabelas de infraestrutura e governança persistem no mesmo arquivo 
 
 ---
 
-## 14. Matriz Completa de Cenários de Teste & Especificações BDD
+## 15. Matriz Completa de Cenários de Teste & Especificações BDD
 
-### 14.1 Seção A: Matriz Completa de Cenários de Teste dos Microsserviços
+### 15.1 Seção A: Matriz Completa de Cenários de Teste dos Microsserviços
 
 | ID | Dimensão | Microsserviço | Cenário / Condição | Entrada / Parâmetros | Resultado Esperado | Prioridade |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -869,7 +953,7 @@ As seguintes tabelas de infraestrutura e governança persistem no mesmo arquivo 
 | **TC-119** | Business Rule | `osint-scraper-gateway (:3009)` | Validação prévia de existência de WhatsApp | Scraper invoca `check-whatsapp` no `whatsapp-gateway` | Descarta telefones fixos ou sem WhatsApp ativo antes de cadastrar o lead na tabela `leads`. | Alta |
 | **TC-120** | Business Rule | `osint-scraper-gateway (:3009)` | Deduplicação soberana de leads | Tentativa de minerar estabelecimento já cadastrado | Sistema detecta duplicidade pelo telefone normalizado E.164 e descarta a inclusão repetida. | Média |
 | **TC-121** | Happy Path | `telegram-gateway (:3008)` | Despacho de alerta comemorativo de PIX pago | `POST /api/v1/telegram/alert` com payload de pagamento | Mensagem formatada em MarkdownV2 entregue instantaneamente no chat privado de João com som de notificação prioritário. | Alta |
-| **TC-122** | Happy Path | `telegram-gateway (:3008)` | Execução de comando administrativo `/status` | João envia `/status` pelo Telegram | Microsserviço consulta a saúde agregada das portas `:8000`, `:3005` a `:3014`, `:6333`, `:8888`, `:5672`, `:3001`, `:3100` e responde em <2s. | Alta |
+| **TC-122** | Happy Path | `telegram-gateway (:3008)` | Execução de comando administrativo `/status` | João envia `/status` pelo Telegram | Microsserviço consulta a saúde agregada das portas `:8000`, `:3005` a `:3015`, `:9000`, `:6333`, `:8888`, `:5672`, `:3001`, `:3100` e responde em <2s. | Alta |
 | **TC-123** | Security | `telegram-gateway (:3008)` | Rejeição de mensagens de remetentes não autorizados | Chat ID diferente de `TELEGRAM_ADMIN_CHAT_ID` enviando comandos | Mensagem sumariamente ignorada sem responder nada; log de tentativa não autorizada registrado. | Crítica |
 | **TC-124** | Happy Path | `telegram-gateway (:3008)` | Comando de pausa emergencial da esteira (`/pausar`) | João envia `/pausar` pelo Telegram | Orquestrador suspende imediatamente novos disparos de WhatsApp e tarefas de prospecção, confirmando no Telegram. | Alta |
 | **TC-125** | Happy Path | `workspace-sandbox-service (:3010)` | Leitura e escrita segura de arquivos de workspace | Chamadas em `/api/v1/workspace/read-file` e `/write-file` | Operações executadas exclusivamente dentro do diretório do workspace do cliente, rejeitando Path Traversal. | Alta |
@@ -913,10 +997,15 @@ As seguintes tabelas de infraestrutura e governança persistem no mesmo arquivo 
 | **TC-163** | Stress / Load | `whatsapp-gateway (:3005)` + `guardrail-gateway (:3007)` | Carga concorrente de 50 mensagens inbound simultâneas no WhatsApp | 50 mensagens enviadas em rajada via socket Baileys | Mensagens enfileiradas na fila AMQP `whatsapp.raw` sem perda de pacotes, inspecionadas pelo Guardrail em pools assíncronos e processadas ordenadamente. | Alta |
 | **TC-164** | State / Lifecycle | `whatsapp-gateway (:3005)` | Ciclo de expiração e regeneração automática de QR Code | QR Code exibido e não escaneado por mais de 60 segundos | Baileys invalida o QR Code expirado, emite novo QR Code automaticamente e atualiza o endpoint `/api/v1/session/qr` sem travar a thread. | Média |
 | **TC-165** | Concurrency | `browser-gateway (:3014)` | Concorrência de pooling com 5+ Browser Contexts simultâneos | Invocação simultânea de 5 screenshots e testes E2E concorrentes | BrowserContexts efêmeros instanciados em paralelo sob o mesmo Chromium master sem colisão de cookies e consumo de RAM contido em < 350MB. | Alta |
+| **TC-166** | Security | `security-audit-gateway (:3015)` | Detecção e bloqueio de segredos vazados no código (Gitleaks) | Dev Agent cria commit com string contendo padrão de token OpenAI/Inter | Gateway identifica o segredo via `scan_secrets`, rejeita a aprovação e aponta linha exata para correção imediata. | Crítica |
+| **TC-167** | Quality | `security-audit-gateway (:3015)` | Avaliação de Quality Gate do SonarQube com código de baixa cobertura | Execução de `run_sonarqube_scan` em projeto com cobertura de testes inferior a 80% | Quality Gate transiciona para `FAILED`, listando débitos técnicos, code smells e linhas de código não cobertas. | Alta |
+| **TC-168** | Security | `security-audit-gateway (:3015)` | Detecção de injeção SQL semântica via Semgrep | Código contendo interpolação de string direta em consulta SQL | `scan_sast_semgrep` identifica vulnerabilidade OWASP A03:2021 (Injection) com severidade CRITICAL em menos de 3 segundos. | Crítica |
+| **TC-169** | Security | `security-audit-gateway (:3015)` | Detecção de dependência vulnerável (SCA com Trivy) | `package.json` contendo versão de biblioteca afetada por CVE crítica | `scan_dependencies` localiza a CVE, indica a versão de patch corrigida e sinaliza reprovação do gate de segurança. | Alta |
+| **TC-170** | Happy Path | `security-audit-gateway (:3015)` | Homologação bem-sucedida do Gate de Segurança pré-deploy | Projeto com 0 segredos, 0 CVEs críticas e Quality Gate do SonarQube `PASSED` | `get_security_gate_status` retorna `security_approved=true`, liberando o `deploy-cloud-gateway` (:3012) para produção. | Alta |
 
 ---
 
-### 14.2 Seção B: Cenários Críticos em Formato BDD (Gherkin)
+### 15.2 Seção B: Cenários Críticos em Formato BDD (Gherkin)
 
 #### BDD-F1-01: Pareamento e Autonomia do WhatsApp Gateway Microservice (TC-101 & TC-102)
 ```gherkin
@@ -1202,14 +1291,45 @@ Funcionalidade: Automação Web, Inspeção de Console e Testes E2E com Playwrig
     E deve confirmar a presença da mensagem de confirmação de agendamento na interface
 ```
 
+#### BDD-F1-13: Auditoria Estática, Varredura de Segredos e Quality Gate com SonarQube (:3015) (TC-166 a TC-170)
+```gherkin
+Funcionalidade: Auditoria de Segurança, Varredura de Segredos e Quality Gate com SonarQube (:3015)
+  Como guardião de segurança cibernética e qualidade da software house
+  Quero analisar estaticamente o código-fonte, varrer dependências e segredos
+  Para garantir que nenhum software suba para produção com vulnerabilidades conhecidas ou qualidade reprovada
+
+  Cenário: Bloqueio imediato de commit contendo chave de API exposta (Gitleaks)
+    Dado que o agente Dev gerou alterações no workspace contendo uma chave de API privada
+    Quando o "git-vcs-gateway" invoca a ferramenta MCP "scan_secrets" no "security-audit-gateway" (:3015)
+    Então o Gitleaks deve analisar o git diff em menos de 2 segundos
+    E deve retornar "leaks_found: true" com a indicação do arquivo e linha do vazamento
+    E o "git-vcs-gateway" deve abortar sumariamente a criação do commit com aviso detalhado ao agente
+
+  Cenário: Reprovação no Quality Gate do SonarQube por baixa cobertura de testes
+    Dado que uma aplicação foi desenvolvida mas sua cobertura de testes unitários é de 65%
+    Quando o agente QA aciona a ferramenta MCP "run_sonarqube_scan"
+    Então o SonarScanner deve compilar o projeto e submeter o relatório ao SonarQube Server (:9000)
+    E o Quality Gate deve ser avaliado como "FAILED" pela regra de cobertura mínima de 80%
+    E o "deploy-cloud-gateway" deve impedir o avanço do projeto para produção
+
+  Cenário: Aprovação plena no Gate de Segurança e liberação para produção
+    Dado que o projeto possui zero segredos expostos no Gitleaks
+    E o Semgrep não encontrou nenhuma vulnerabilidade OWASP crítica
+    E o Trivy validou que não há dependências com CVEs de severidade alta ou crítica
+    E o Quality Gate oficial do SonarQube retornou status "PASSED"
+    Quando o "deploy-cloud-gateway" invoca a ferramenta MCP "get_security_gate_status"
+    Então o "security-audit-gateway" deve retornar "security_approved: true"
+    E o Gate de Segurança deve autorizar o deploy de produção para o domínio oficial do cliente
+```
+
 ---
 
-## 15. Segurança de Borda & Remediações Arquiteturais Herdadas da Auditoria (Fase 1)
+## 16. Segurança de Borda & Remediações Arquiteturais Herdadas da Auditoria (Fase 1)
 
 > [!IMPORTANT]
 > **Origem dos Requisitos:** Esta seção formaliza a alocação e especificação dos achados da auditoria de segurança da Fase 0 (`audits/REPORT.md`, `audits/FINDINGS-DETAIL.md` e `audits/NEEDS-VALIDATION.md`) cujo tratamento arquitetural pertence legitimamente à camada de borda e gateways desacoplados da Fase 1.
 
-### 15.1 SEC-009: Inspeção Semântica Profunda de Injeção de Prompt & Jailbreak (`guardrail-gateway :3007`)
+### 16.1 SEC-009: Inspeção Semântica Profunda de Injeção de Prompt & Jailbreak (`guardrail-gateway :3007`)
 * **Contexto de Borda:** Na Fase 0, mensagens de ferramentas locais foram envelopadas com tags estruturais (`<untrusted_content>`). No entanto, a interação com clientes desconhecidos via WhatsApp, Telegram e formulários web expõe o sistema a ataques adversariais complexos (Prompt Injection indireto, Jailbreaks, System Prompt Extraction e Command Hijacking).
 * **Especificação Soberana do Gateway de Guardrail:**
   1. **Inspeção Síncrona Obrigatória:** Nenhuma mensagem externa atinge o `engine-core` sem validação prévia pelo `guardrail-gateway (:3007)`.
@@ -1217,10 +1337,10 @@ Funcionalidade: Automação Web, Inspeção de Console e Testes E2E com Playwrig
   3. **Categorias Monitoradas:** Violações de segurança, tentativas de forçar personas desautorizadas, injeção de instruções de sistema e tentativa de extração de credenciais.
   4. **Ação de Bloqueio:** Mensagens classificadas como maliciosas são descartadas na borda, registrando evento em log de segurança e devolvendo resposta neutra de desvio ao remetente, sem consumir tokens do modelo cognitivo principal.
 
-### 15.2 SEC-021: Barramento AMQP Distribuído, Separação MCP vs. AMQP e Validação de Payloads
+### 16.2 SEC-021: Barramento AMQP Distribuído, Separação MCP vs. AMQP e Validação de Payloads
 * **Contexto de Borda:** O RabbitMQ (introduzido na Fase 0 para fila local de tarefas) é expandido na Fase 1 para se tornar o **barramento central de mensageria assíncrona** entre todos os microsserviços e gateways.
 * **Separação Rígida de Responsabilidades: MCP (SSE) vs. RabbitMQ (AMQP):**
-  * **MCP via SSE (JSON-RPC 2.0):** É o canal exclusivo para **invocação síncrona e determinística de ferramentas pelos agentes** (`tools/call`). O agente necessita do retorno imediato do método para continuar seu raciocínio ReAct (ex: `read_file`, `git_commit`, `create_pix_charge`, `recall`, `browser_screenshot`).
+  * **MCP via SSE (JSON-RPC 2.0):** É o canal exclusivo para **invocação síncrona e determinística de ferramentas pelos agentes** (`tools/call`). O agente necessita do retorno imediato do método para continuar seu raciocínio ReAct (ex: `read_file`, `git_commit`, `create_pix_charge`, `recall`, `browser_screenshot`, `run_sonarqube_scan`).
   * **RabbitMQ (AMQP Topic Exchange):** É o canal exclusivo para **eventos assíncronos, ingestão de tráfego externo e filas desacopladas**. Permite bufferizar picos de mensagens sem sobrecarregar a memória do orquestrador (ex: chegada de mensagens brutas do WhatsApp em `whatsapp.raw`, despacho de mensagens seguras em `whatsapp.inbound`, webhooks do Banco Inter em `payment.webhooks` e fila de alertas em `telegram.alerts`).
 * **Topologia de Exchanges e Queues AMQP:**
   * **Exchange Principal:** `agency.topic` (Topic Exchange durável).
@@ -1241,24 +1361,24 @@ Funcionalidade: Automação Web, Inspeção de Console e Testes E2E com Playwrig
     * `timestamp`: ISO 8601 UTC
     * `payload`: JSON com teto rígido de **64 KB**. Mensagens excedentes são rejeitadas com erro de validação.
 
-### 15.3 SEC-NV-001: Arquitetura de Reverse Proxy & Ingress Rate Limiting
+### 16.3 SEC-NV-001: Arquitetura de Reverse Proxy & Ingress Rate Limiting
 * **Contexto de Borda:** Em conformidade com o apontamento `audits/NEEDS-VALIDATION.md`, os servidores Uvicorn e Express da esteira nunca devem ser expostos diretamente à internet pública.
 * **Arquitetura de Ingress de Produção:**
-  1. **Proxy Reverso Unificado:** Nginx / Cloudflare WAF à frente das portas `:8000`, `:3005`, `:3006`, `:3007`, `:3008`, `:3009`, `:3010`, `:3011`, `:3012`, `:3013` e `:3014`.
+  1. **Proxy Reverso Unificado:** Nginx / Cloudflare WAF à frente das portas `:8000`, `:3005`, `:3006`, `:3007`, `:3008`, `:3009`, `:3010`, `:3011`, `:3012`, `:3013`, `:3014` e `:3015`.
   2. **Rate Limiting por IP na Borda:**
      * Webhooks de pagamento (`/api/v1/inter/webhook`): máximo de **30 req/min por IP** com whitelist dos ranges de IP oficiais do Banco Inter.
      * Webhooks de mensageria e formulários públicos: máximo de **60 req/min por IP**.
      * Endpoints de orquestração interna (`/api/v1/agent/run`): acesso bloqueado da internet pública, restrito à rede interna / VPN.
   3. **Mitigação Anti-DDoS e WAF:** Bloqueio na borda de scanners de vulnerabilidades (SQLi, XSS, Path Traversal) antes de alcançar qualquer código de aplicação.
 
-### 15.4 Desacoplamento das Ferramentas Locais para o Servidor MCP Dedicado (:3010)
+### 16.4 Desacoplamento das Ferramentas Locais para o Servidor MCP Dedicado (:3010)
 * **Transição Arquitetural da Fase 0 para a Fase 1:**
   * Na Fase 0, `read_file`, `write_file`, `patch_file`, `list_directory` e `run_terminal_command` foram implementados embutidos no processo Python do `services/engine`.
   * Na Fase 1, essas ferramentas são **completamente migradas e desacopladas** para o microsserviço autônomo **`workspace-sandbox-service` (Porta `:3010`)**.
   * O `engine-core` elimina o código nativo de filesystem e executa essas ações estritamente como **MCP Client** via JSON-RPC 2.0 SSE, isolando o processo orquestrador do daemon Docker e do sistema de arquivos local.
 
-### 15.5 SEC-026: Autenticação Inter-Serviços Unificada (Token X-Agency-Key)
-* **Padrão de Autenticação na Rede Interna:** Todos os 10 microsserviços e o orquestrador compartilham uma chave secreta interna injetada via variável de ambiente confidencial (`AGENCY_SECRET_KEY`) no `docker-compose.yml`.
+### 16.5 SEC-026: Autenticação Inter-Serviços Unificada (Token X-Agency-Key)
+* **Padrão de Autenticação na Rede Interna:** Todos os 11 microsserviços e o orquestrador compartilham uma chave secreta interna injetada via variável de ambiente confidencial (`AGENCY_SECRET_KEY`) no `docker-compose.yml`.
 * **Validação Mandatória de Headers:**
   * 100% dos endpoints REST (incluindo rotas administrativas sensíveis como `/api/v1/session/logout` no `whatsapp-gateway`) e todas as conexões MCP SSE (`/sse`) exigem o header HTTP:
     ```http
@@ -1269,29 +1389,29 @@ Funcionalidade: Automação Web, Inspeção de Console e Testes E2E com Playwrig
 
 ---
 
-## 16. Orquestração, Observabilidade & Políticas de Fail-Safe da Fase 1
+## 17. Orquestração, Observabilidade & Políticas de Fail-Safe da Fase 1
 
-### 16.1 Arquitetura Docker Compose, Rede Bridge & Ordem de Boot (`agency-network`)
+### 17.1 Arquitetura Docker Compose, Rede Bridge & Ordem de Boot (`agency-network`)
 A suíte inteira de microsserviços sobe orquestrada via Docker Compose com isolamento de rede e DNS interno:
-* **Rede Interna:** Driver bridge `agency-network`. Cada contêiner descobre os pares pelo hostname oficial do serviço (ex: `http://whatsapp-gateway:3005`, `http://payment-gateway:3006`, `http://guardrail-gateway:3007`, `http://knowledge-memory-gateway:3013`, `http://browser-gateway:3014`, `http://qdrant:6333`).
-* **Mapeamento de Portas:** Todas as portas (`:3005` a `:3014`, `:6333`, `:8000`, `:3001`, `:8888`, `:5672`, `:15672`) são mapeadas para `localhost` apenas para inspeção de desenvolvimento e reverse proxy.
+* **Rede Interna:** Driver bridge `agency-network`. Cada contêiner descobre os pares pelo hostname oficial do serviço (ex: `http://whatsapp-gateway:3005`, `http://payment-gateway:3006`, `http://guardrail-gateway:3007`, `http://knowledge-memory-gateway:3013`, `http://browser-gateway:3014`, `http://security-audit-gateway:3015`, `http://qdrant:6333`, `http://sonarqube:9000`).
+* **Mapeamento de Portas:** Todas as portas (`:3005` a `:3015`, `:9000`, `:5432`, `:6333`, `:8000`, `:3001`, `:8888`, `:5672`, `:15672`) são mapeadas para `localhost` apenas para inspeção de desenvolvimento e reverse proxy.
 * **Ordem de Inicialização (Boot Sequence com Healthchecks):**
-  1. **Camada 1 (Infraestrutura Base):** `rabbitmq` (:5672), `qdrant` (:6333) e `searxng` (:8888) inicializam primeiro com healthchecks ativos.
-  2. **Camada 2 (Gateways & Servidores MCP):** Os 10 microsserviços sobem utilizando `depends_on: { rabbitmq: { condition: service_healthy } }`.
+  1. **Camada 1 (Infraestrutura Base):** `rabbitmq` (:5672), `qdrant` (:6333), `searxng` (:8888), `sonarqube-db` (:5432) e `sonarqube` (:9000) inicializam primeiro com healthchecks ativos.
+  2. **Camada 2 (Gateways & Servidores MCP):** Os 11 microsserviços sobem utilizando `depends_on: { rabbitmq: { condition: service_healthy } }`.
   3. **Camada 3 (Orquestrador Core):** O `engine-core` (:8000) sobe por último, conectando-se aos endpoints `/sse` de cada gateway com auto-discovery dinâmico.
 * **Políticas de Reinício:** Todos os contêineres rodam com `restart: unless-stopped`.
 * **Healthchecks Ativos:** Cada microsserviço define checagem periódica (`/health` a cada 10s com timeout de 3s e 3 retries). Se o processo travar ou vazar memória, o Docker restarta o contêiner automaticamente.
 
-### 16.2 Stack de Observabilidade Grafana + Loki (`:3001` e `:3100`)
+### 17.2 Stack de Observabilidade Grafana + Loki (`:3001` e `:3100`)
 Para monitorar a saúde, consumo de recursos e fluxo de requisições sem inspecionar múltiplos terminais:
-* **Loki (`:3100`):** Armazena e indexa logs de todos os 10 microsserviços e do `engine-core`.
-* **Promtail:** Agente daemon que coleta automaticamente o stdout/stderr de todos os contêineres Docker, injetando labels estruturadas (`service="whatsapp"`, `service="payment"`, `service="knowledge"`, `service="browser"`, `level="error"`, `correlation_id`).
+* **Loki (`:3100`):** Armazena e indexa logs de todos os 11 microsserviços e do `engine-core`.
+* **Promtail:** Agente daemon que coleta automaticamente o stdout/stderr de todos os contêineres Docker, injetando labels estruturadas (`service="whatsapp"`, `service="payment"`, `service="knowledge"`, `service="browser"`, `service="security"`, `level="error"`, `correlation_id`).
 * **Grafana (`:3001`):** Interface visual unificada com dashboards pré-configurados:
   * Visão geral de latência de cada endpoint REST e ferramenta MCP.
   * Consumo de CPU e RAM por microsserviço.
   * Live tail de logs com filtro rápido por `correlation_id` e `lead_id`.
 
-### 16.3 Política Fail-Fast & Degradação Parcial Controlada
+### 17.3 Política Fail-Fast & Degradação Parcial Controlada
 Quando um gateway essencial apresenta instabilidade, a segurança operacional da software house prevalece sobre a continuidade:
 * **Gateways Críticos de Pausa Emergencial Total:** `whatsapp-gateway` (:3005), `payment-gateway` (:3006) e `guardrail-gateway` (:3007).
   * Se qualquer um dos 3 falhar consecutivamente no healthcheck ou retornar `unhealthy`:
@@ -1306,7 +1426,7 @@ Quando um gateway essencial apresenta instabilidade, a segurança operacional da
   1. A esteira retoma automaticamente a operação das filas pausadas sem necessidade de comando manual.
   2. Um alerta verde é despachado para o Telegram de João: *"✅ Serviço [nome] restabelecido. Esteira operacional retomada com sucesso."*
 
-### 16.4 Sandbox Docker DooD (Docker-outside-of-Docker via `/var/run/docker.sock`)
+### 17.4 Sandbox Docker DooD (Docker-outside-of-Docker via `/var/run/docker.sock`)
 O microsserviço `workspace-sandbox-service` (:3010) adota o padrão **Docker-outside-of-Docker (DooD)**:
 * **Socket Montado:** Monta o socket do host (`/var/run/docker.sock`) em modo restrito dentro do contêiner `:3010`.
 * **Criação de Contêineres Irmãos:** Quando um agente de desenvolvimento compila código ou roda testes unitários (`npm test`), o microsserviço cria contêineres efêmeros irmãos (`node:20-slim`) diretamente no daemon do host.
@@ -1315,7 +1435,7 @@ O microsserviço `workspace-sandbox-service` (:3010) adota o padrão **Docker-ou
   * **Performance & Cache:** Compartilha o cache de imagens do host, acelerando a inicialização de containers efêmeros para menos de 300ms.
   * **Isolamento Estrito:** Os contêineres efêmeros montam apenas o diretório do workspace do cliente, rodam sem acesso à rede externa e são destruídos com flag `--rm` imediatamente após a execução.
 
-### 16.5 Política de Backup Local Atômico Diário & Snapshots Qdrant
+### 17.5 Política de Backup Local Atômico Diário & Snapshots Qdrant
 Para blindar o banco relacional e a base vetorial contra corrupção ou falhas de disco sem interromper a esteira:
 * **Snapshot Atômico do SQLite (`pipeline.db`):**
   * Cron diário executado às 03:00 aciona o snapshot em quente através da instrução soberana do SQLite:

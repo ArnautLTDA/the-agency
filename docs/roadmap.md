@@ -23,7 +23,8 @@ the-agency/
 │   ├── git/                 # Git & GitHub VCS MCP Server (FastAPI :3011)
 │   ├── deploy/              # Cloud & Deploy MCP Server Vercel/Supabase (FastAPI :3012)
 │   ├── memory/              # Knowledge, Memory & CRAG MCP Server (Qdrant + BGE :3013)
-│   └── browser/             # Browser Automation & Playwright MCP Server (FastAPI :3014)
+│   ├── browser/             # Browser Automation & Playwright MCP Server (FastAPI :3014)
+│   └── security/            # Security Audit & Code Quality MCP Server (FastAPI :3015)
 ├── apps/
 │   └── cockpit/             # Painel de Comando Web de João (Next.js 15 / Tailwind :3000)
 ├── workspaces/              # Sandboxes isolados onde os projetos de clientes são programados
@@ -115,9 +116,17 @@ Criação e padronização de todos os sentidos, braços operacionais e ferramen
   * Expõe **Servidor MCP via SSE** com ferramentas: `browser_screenshot`, `browser_inspect_console`, `browser_interact` e `browser_run_e2e_tests`.
   * Atendimento multi-persona: CRO (screenshots fidedignos de demos para WhatsApp), QA (inspeção de erros de console/rede e suítes E2E), Designer (testes responsivos mobile 375x812 e desktop 1920x1080) e Dev (validação de renderização/hidratação).
   * Arquitetura de pooling de `BrowserContext` efêmero: inicialização em <30ms, consumo médio de apenas ~180MB RAM e isolamento total de cookies/cache por teste.
-* **1.10 Orquestração, Observabilidade, Segurança & Backups:**
+* **1.10 Security Audit & Code Quality MCP Server (`:3015`):**
+  * Microsserviço independente em Python integrando suíte enterprise de 5 motores de segurança e qualidade.
+  * Servidor oficial **SonarQube Community Edition** em Docker (`:9000`) com banco PostgreSQL (`:5432`) avaliando débitos técnicos, code smells, cobertura de testes e homologação de Quality Gates (`Passed` / `Failed`).
+  * Ferramenta **Gitleaks** para Secret Scanning pré-commit/push impedindo vazamento de tokens e credenciais.
+  * Ferramenta **Semgrep** para análise estática (SAST) semântica e regras OWASP Top 10 em < 3 segundos.
+  * Ferramenta **Trivy / OSV-Scanner** para Software Composition Analysis (SCA) detectando CVEs ativas em dependências npm e python.
+  * Ferramenta **Nuclei** para pentest dinâmico (DAST) em URLs efêmeras de preview na Vercel antes de produção.
+  * Expõe **Servidor MCP via SSE** com ferramentas: `run_sonarqube_scan`, `scan_secrets`, `scan_sast_semgrep`, `scan_dependencies`, `run_dast_scan` e `get_security_gate_status`.
+* **1.11 Orquestração, Observabilidade, Segurança & Backups:**
   * Docker Compose unificado com rede interna bridge `agency-network`, DNS interno e healthchecks com auto-restart e ordem estrita de boot (Infraestrutura -> Gateways -> Core).
-  * Stack de observabilidade Grafana (`:3001`) + Loki (`:3100`) + Promtail coletando logs estruturados JSON de todos os 10 contêineres com dashboards pré-configurados.
+  * Stack de observabilidade Grafana (`:3001`) + Loki (`:3100`) + Promtail coletando logs estruturados JSON de todos os 11 contêineres com dashboards pré-configurados.
   * Autenticação inter-serviços unificada via token secreto compartilhado `X-Agency-Key` em todos os endpoints REST e conexões MCP SSE.
   * Política Fail-Fast com Pausa Emergencial por queda de gateways críticos (`whatsapp`, `payment`, `guardrail`), Degradação Parcial Controlada (`telegram`) e Auto-Retomada automática a cada 5s ao recuperar status `healthy`.
   * Sandbox Docker efêmero via DooD (`/var/run/docker.sock`) garantindo isolamento sem privilégios root de DinD.
