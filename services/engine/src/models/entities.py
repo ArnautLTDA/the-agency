@@ -126,3 +126,159 @@ class TokenMetric(SQLModel, table=True):
     cached_tokens: int = Field(default=0)
     cost_usd: float = Field(default=0.0)
     cost_brl: float = Field(default=0.0)
+
+
+# =============================================================================
+# Fase 1: Entidades Soberanas de Microsserviços e Borda
+# =============================================================================
+
+class LeadStage(str, Enum):
+    MINED = "MINED"
+    DEMO_READY = "DEMO_READY"
+    OUTREACH = "OUTREACH"
+    NEGOTIATING = "NEGOTIATING"
+    CONTRATO_ASSINADO = "CONTRATO_ASSINADO"
+    DEV = "DEV"
+    QA = "QA"
+    HOMOLOGATING = "HOMOLOGATING"
+    PROD = "PROD"
+
+
+class Lead(SQLModel, table=True):
+    """Lead central business entity discovered and progressed through the agency funnel."""
+
+    __tablename__ = "leads"
+
+    id: str = Field(primary_key=True, description="Unique lead slug or UUID")
+    name: str = Field(nullable=False, description="Commercial name")
+    niche: str = Field(nullable=False, index=True, description="Market vertical")
+    phone: str = Field(nullable=False, unique=True, index=True, description="Normalized E.164 phone")
+    address: str | None = Field(default=None)
+    rating: float | None = Field(default=None)
+    reviews_count: int | None = Field(default=None)
+    instagram_url: str | None = Field(default=None)
+    extracted_data: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
+    stage: str = Field(default=LeadStage.MINED.value, index=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class SecurityIncident(SQLModel, table=True):
+    """Audit log of malicious, prompt injection, or jailbreak attempts intercepted at edge."""
+
+    __tablename__ = "security_incidents"
+
+    id: int | None = Field(default=None, primary_key=True)
+    sender_jid: str = Field(nullable=False, index=True)
+    raw_message: str = Field(nullable=False)
+    threat_category: str = Field(nullable=False, index=True)
+    risk_score: float = Field(nullable=False)
+    action_taken: str = Field(nullable=False)  # SILENT_DROP, BLOCKED
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
+
+
+class PixStatus(str, Enum):
+    ATIVA = "ATIVA"
+    CONCLUIDA = "CONCLUIDA"
+    EXPIRADA = "EXPIRADA"
+    CANCELADA = "CANCELADA"
+    LIQUIDACAO_DIVERGENTE = "LIQUIDACAO_DIVERGENTE"
+
+
+class PixTransaction(SQLModel, table=True):
+    """Dynamic PIX charges and settlement confirmations via Banco Inter mTLS."""
+
+    __tablename__ = "pix_transactions"
+
+    id: int | None = Field(default=None, primary_key=True)
+    txid: str = Field(nullable=False, unique=True, index=True)
+    lead_id: str = Field(nullable=False, index=True)
+    amount_cents: int = Field(nullable=False)
+    status: str = Field(default=PixStatus.ATIVA.value, index=True)
+    pix_copia_e_cola: str = Field(nullable=False)
+    qr_code_base64: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
+    paid_at: datetime | None = Field(default=None)
+
+
+class TelegramAuditLog(SQLModel, table=True):
+    """Auditing of all inbound commands from Joao and outbound alerts."""
+
+    __tablename__ = "telegram_audit_logs"
+
+    id: int | None = Field(default=None, primary_key=True)
+    direction: str = Field(nullable=False, index=True)  # OUTBOUND_ALERT, INBOUND_COMMAND
+    command: str | None = Field(default=None, index=True)
+    payload: str = Field(nullable=False)
+    status: str = Field(nullable=False)  # SENT, EXECUTED, REJECTED
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
+
+
+class ApprovalStatus(str, Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+
+
+class TelegramApproval(SQLModel, table=True):
+    """Traceability for interactive human decisions with 24-hour expiration timeout."""
+
+    __tablename__ = "telegram_approvals"
+
+    id: int | None = Field(default=None, primary_key=True)
+    lead_id: str | None = Field(default=None, index=True)
+    decision_type: str = Field(nullable=False, index=True)  # DEPLOY_PRODUCTION, BUDGET_OVERRIDE, CALIBRATION_STEP
+    details: str = Field(nullable=False)
+    status: str = Field(default=ApprovalStatus.PENDING.value, index=True)
+    requested_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
+    decided_at: datetime | None = Field(default=None)
+
+
+class GitAuditLog(SQLModel, table=True):
+    """Version control and commit audit trail with granular agent author attribution."""
+
+    __tablename__ = "git_audit_logs"
+
+    id: int | None = Field(default=None, primary_key=True)
+    workspace_id: str = Field(nullable=False, index=True)
+    action: str = Field(nullable=False, index=True)  # COMMIT, BRANCH_CREATE, PR_CREATE, PUSH
+    agent_role: str = Field(nullable=False, index=True)  # dev, qa, security
+    branch: str = Field(nullable=False)
+    commit_hash: str | None = Field(default=None)
+    message: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
+
+
+class Deployment(SQLModel, table=True):
+    """Cloud deployments history, Preview URLs and Production Triple Gate verification."""
+
+    __tablename__ = "deployments"
+
+    id: int | None = Field(default=None, primary_key=True)
+    lead_id: str = Field(nullable=False, index=True)
+    workspace_id: str = Field(nullable=False, index=True)
+    deployment_type: str = Field(nullable=False, index=True)  # PREVIEW_DEMO, PRODUCTION
+    deployment_url: str = Field(nullable=False)
+    status: str = Field(nullable=False, index=True)  # BUILDING, READY, FAILED, BLOCKED_BY_GATE
+    qa_approved: bool = Field(default=False)
+    security_approved: bool = Field(default=False)
+    payment_cleared: bool = Field(default=False)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
+
+
+class SecurityAudit(SQLModel, table=True):
+    """Static and dynamic security scan results (SonarQube, Gitleaks, Semgrep, Trivy, Nuclei)."""
+
+    __tablename__ = "security_audits"
+
+    id: int | None = Field(default=None, primary_key=True)
+    lead_id: str = Field(nullable=False, index=True)
+    workspace_id: str = Field(nullable=False, index=True)
+    scan_type: str = Field(nullable=False, index=True)  # SONARQUBE, GITLEAKS, SEMGREP, TRIVY, NUCLEI
+    status: str = Field(nullable=False, index=True)  # PASSED, FAILED, WARNING
+    critical_count: int = Field(default=0)
+    high_count: int = Field(default=0)
+    report_summary: str = Field(nullable=False)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
+

@@ -85,6 +85,57 @@ async def health_check(session: AsyncSession = Depends(get_session)):
     }
 
 
+@router.get("/status")
+async def get_system_status():
+    """Aggregated operational and telemetry status of engine and vital gateways."""
+    from src.services.supervisor import get_supervisor
+
+    supervisor = get_supervisor()
+    report = supervisor.get_status_report()
+    return {
+        "status": "ok",
+        "engine_state": report["state"],
+        "is_paused": report["is_paused"],
+        "manually_paused": report["manually_paused"],
+        "vital_gateways": report["vital_gateways"],
+    }
+
+
+@router.post("/agent/pause")
+@router.post("/pausar")
+async def pause_pipeline():
+    """Pauses pipeline outreach operations (TC-124)."""
+    from src.services.supervisor import get_supervisor
+
+    supervisor = get_supervisor()
+    await supervisor.pause_manually("Triggered via API / Telegram command")
+    return {
+        "status": "ok",
+        "state": supervisor.state.value,
+        "message": "Pipeline outreach paused successfully.",
+    }
+
+
+@router.post("/agent/resume")
+@router.post("/retomar")
+async def resume_pipeline():
+    """Resumes pipeline outreach operations if vital gateways are healthy (TC-216)."""
+    from src.services.supervisor import get_supervisor
+
+    supervisor = get_supervisor()
+    success = await supervisor.resume_manually()
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Cannot resume pipeline: one or more vital gateways are unhealthy.",
+        )
+    return {
+        "status": "ok",
+        "state": supervisor.state.value,
+        "message": "Pipeline operations resumed successfully.",
+    }
+
+
 @router.post(
     "/agent/run",
     status_code=status.HTTP_202_ACCEPTED,
@@ -125,6 +176,17 @@ async def dispatch_agent_run(
         )
     resolved_workspace.mkdir(parents=True, exist_ok=True)
 
+    # Check if supervisor is in PAUSA_EMERGENCIAL for outbound outreach
+    from src.services.supervisor import get_supervisor
+
+    supervisor = get_supervisor()
+    is_outreach = request.agent_id in {"sales", "prospector", "commercial"} or "prospect" in request.task.lower()
+    if supervisor.is_paused() and is_outreach:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Pipeline is currently in PAUSA_EMERGENCIAL. Outbound outreach tasks are suspended.",
+        )
+
     # SEC-008: Check queue backpressure before persisting or accepting
     run_id = uuid.uuid4()
     try:
@@ -135,6 +197,7 @@ async def dispatch_agent_run(
                 "task": request.task,
                 "workspace_slug": request.workspace_slug,
                 "max_iterations": request.max_iterations,
+                "is_outbound_prospecting": is_outreach,
             },
         )
     except QueueCapacityExceededError as exc:

@@ -58,11 +58,20 @@ async def lifespan(app: FastAPI):
     queue_service = get_queue_service()
     await queue_service.connect()
 
+    # 5. Initialize Supervisor & Discovery (Fail-Fast & Tool Registry)
+    import asyncio
+    from src.services.supervisor import get_supervisor
+    from src.tools.mcp_discovery import get_discovery_service
+    supervisor = get_supervisor()
+    discovery = get_discovery_service()
+    asyncio.create_task(discovery.discover_all(timeout_per_service=1.5))
+
     logger.info(f"The Agency Engine successfully started on {settings.HOST}:{settings.PORT}")
     yield
 
     # Shutdown routines
     logger.info("Shutting down The Agency Engine...")
+    await supervisor.stop()
     await queue_service.close()
     pool = get_agent_pool()
     await pool.shutdown()

@@ -5,6 +5,7 @@ description = "The Agency Engine - Standalone Autonomous Agent Runtime"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "agency-common",
     "aio-pika>=9.5.0",
     "aiosqlite>=0.20.0",
     "alembic>=1.14.0",
@@ -24,6 +25,9 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+agency-common = { path = "../common", editable = true }
 
 [dependency-groups]
 dev = [

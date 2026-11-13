@@ -43,6 +43,14 @@ def test_tc069_alembic_upgrade_head_on_boot():
         assert "audit_logs" in tables
         assert "token_metrics" in tables
         assert "agent_messages" in tables
+        assert "leads" in tables
+        assert "security_incidents" in tables
+        assert "pix_transactions" in tables
+        assert "telegram_audit_logs" in tables
+        assert "telegram_approvals" in tables
+        assert "git_audit_logs" in tables
+        assert "deployments" in tables
+        assert "security_audits" in tables
 
 
 @pytest.mark.asyncio
@@ -164,3 +172,41 @@ async def test_tc074_retention_purge_and_vacuum():
             assert remaining_logs[0].content == "Fresh thought"
 
         await engine.dispose()
+
+
+def test_tc223_tc224_hot_backup_and_retention():
+    """TC-223 & TC-224: Atomic hot backup via VACUUM INTO and 7-day retention cleanup."""
+    import sys
+    sys.path.insert(0, str(Path("../../scripts/maintenance").resolve()))
+    sys.path.insert(0, str(Path("scripts/maintenance").resolve()))
+    from backup_db import run_backup
+
+    with TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "test_backup.db"
+        backup_dir = Path(tmp_dir) / "backups"
+
+        # Initialize sample sqlite db
+        import sqlite3
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE sample (id INT PRIMARY KEY, name TEXT);")
+        conn.execute("INSERT INTO sample VALUES (1, 'Test');")
+        conn.commit()
+        conn.close()
+
+        # Run backup
+        gz_file = run_backup(str(db_path), str(backup_dir), retention_days=7)
+        assert gz_file.exists()
+        assert gz_file.name.endswith(".db.gz")
+
+        # Create simulated old backup file (older than 7 days)
+        old_file = backup_dir / "pipeline-20200101_000000.db.gz"
+        old_file.write_bytes(b"dummy_old_data")
+        # Set mtime to 10 days ago
+        ten_days_ago = (datetime.now() - timedelta(days=10)).timestamp()
+        import os
+        os.utime(str(old_file), (ten_days_ago, ten_days_ago))
+
+        # Re-run backup: old file should be expunged by retention policy
+        run_backup(str(db_path), str(backup_dir), retention_days=7)
+        assert not old_file.exists(), "Old backup file exceeding 7 days retention should be expunged"
+

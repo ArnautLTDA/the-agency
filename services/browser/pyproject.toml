@@ -1,0 +1,38 @@
+[project]
+name = "agency-browser"
+version = "0.1.0"
+description = "Playwright Browser Automation & Screenshot Gateway for The Agency"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "agency-common",
+    "fastapi>=0.115.0",
+    "httpx>=0.28.0",
+    "loguru>=0.7.3",
+    "mcp>=2.3.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "uvicorn[standard]>=0.32.0",
+]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+agency-common = { path = "../common", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "respx>=0.22.0",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra -q --cov=src --cov-report=term-missing"

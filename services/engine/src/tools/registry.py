@@ -1,6 +1,7 @@
 """Tool Registry and JSON Schemas matching Gemini/LiteLLM function calling (TC-020)."""
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -16,6 +17,7 @@ from src.tools.implementations import (
     send_agent_message,
     write_file,
 )
+from src.tools.mcp_client import get_sandbox_mcp_client
 
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
@@ -189,14 +191,33 @@ async def execute_tool(
 ) -> str:
     """Dispatches a tool call with self-correction feedback on validation or security errors."""
     try:
+        # Check if remote or in-memory MCP sandbox dispatch is active
+        client = get_sandbox_mcp_client()
+        use_mcp = (
+            client.in_memory_server is not None
+            or os.environ.get("USE_REMOTE_SANDBOX_MCP", "").lower() in ("true", "1")
+        )
+
         if name == "read_file":
             if "path" not in arguments:
                 return "Error: Missing required parameter 'path'."
+            if use_mcp:
+                return await client.call_tool("read_file", {"workspace_id": workspace_dir.name, "path": str(arguments["path"])})
             return read_file(workspace_dir=workspace_dir, path=str(arguments["path"]))
 
         elif name == "write_file":
             if "path" not in arguments or "content" not in arguments:
                 return "Error: Missing required parameters 'path' or 'content'."
+            if use_mcp:
+                return await client.call_tool(
+                    "write_file",
+                    {
+                        "workspace_id": workspace_dir.name,
+                        "path": str(arguments["path"]),
+                        "content": str(arguments["content"]),
+                        "overwrite": bool(arguments.get("overwrite", True)),
+                    },
+                )
             return write_file(
                 workspace_dir=workspace_dir,
                 path=str(arguments["path"]),
@@ -208,6 +229,16 @@ async def execute_tool(
             for param in ["path", "search_block", "replace_block"]:
                 if param not in arguments:
                     return f"Error: Missing required parameter '{param}'."
+            if use_mcp:
+                return await client.call_tool(
+                    "patch_file",
+                    {
+                        "workspace_id": workspace_dir.name,
+                        "path": str(arguments["path"]),
+                        "target": str(arguments["search_block"]),
+                        "replacement": str(arguments["replace_block"]),
+                    },
+                )
             return patch_file(
                 workspace_dir=workspace_dir,
                 path=str(arguments["path"]),
@@ -217,6 +248,8 @@ async def execute_tool(
 
         elif name == "list_directory":
             path = str(arguments.get("path", "."))
+            if use_mcp:
+                return await client.call_tool("list_directory", {"workspace_id": workspace_dir.name, "path": path})
             listing = list_directory(workspace_dir=workspace_dir, path=path)
             if isinstance(listing, DirectoryListing):
                 if listing.has_more:
@@ -236,8 +269,16 @@ async def execute_tool(
                 raw_timeout = int(arguments.get("timeout", 60))
             except (ValueError, TypeError):
                 raw_timeout = 60
-            # SEC-006: Clamped strictly between 5 and 180 seconds
             clamped_timeout = max(5, min(raw_timeout, 180))
+            if use_mcp:
+                return await client.call_tool(
+                    "run_terminal_command",
+                    {
+                        "workspace_id": workspace_dir.name,
+                        "command": str(arguments["command"]),
+                        "timeout_seconds": clamped_timeout,
+                    },
+                )
             result = run_terminal_command(
                 workspace_dir=workspace_dir,
                 command=str(arguments["command"]),
@@ -263,6 +304,12 @@ async def execute_tool(
             )
 
         else:
+            # Route to dynamic MCP discovery service if registered across the 11 microservices
+            from src.tools.mcp_discovery import get_discovery_service
+            discovery = get_discovery_service()
+            if discovery.is_tool_available(name):
+                return await discovery.call_tool(name, arguments)
+
             return f"Error: Unknown tool '{name}'. Authorized tools are {[t['function']['name'] for t in TOOL_SCHEMAS]}."
 
     except (PathTraversalError, CouncilSecurityError) as sec_exc:

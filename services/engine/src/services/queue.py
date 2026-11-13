@@ -17,6 +17,11 @@ class QueueCapacityExceededError(Exception):
     pass
 
 
+class OutboundQueueFrozenError(Exception):
+    """Raised when an outbound prospecting task is dispatched while outbound is frozen."""
+    pass
+
+
 class QueueService:
     """Manages asynchronous task enqueuing and consumption via RabbitMQ or in-memory fallback."""
 
@@ -37,6 +42,20 @@ class QueueService:
         self._reconnecting = False
         self._in_memory_queue: asyncio.Queue | None = None
         self._in_memory_consumer_task: asyncio.Task | None = None
+        self._outbound_frozen: bool = False
+
+    @property
+    def is_outbound_frozen(self) -> bool:
+        """Returns True if outbound prospecting queues are frozen by the supervisor."""
+        return self._outbound_frozen
+
+    def freeze_outbound(self) -> None:
+        """Freezes outbound prospecting queues."""
+        self._outbound_frozen = True
+
+    def unfreeze_outbound(self) -> None:
+        """Resumes outbound prospecting queues."""
+        self._outbound_frozen = False
 
     @property
     def is_connected(self) -> bool:
@@ -90,6 +109,10 @@ class QueueService:
         payload: dict[str, Any],
     ) -> bool:
         """Publishes a task payload. Raises QueueCapacityExceededError if over capacity (SEC-008)."""
+        if self._outbound_frozen and payload.get("is_outbound_prospecting", False):
+            logger.warning(f"Rejecting outbound prospecting task {run_id}: Outbound queues frozen.")
+            raise OutboundQueueFrozenError("Outbound prospecting is frozen due to emergency pause.")
+
         current_size = await self.get_queue_size()
         if current_size >= self.max_capacity:
             logger.error(f"Task queue capacity reached ({current_size}/{self.max_capacity}). Rejecting task {run_id}.")

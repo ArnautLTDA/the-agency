@@ -26,6 +26,9 @@ logs/*
 !logs/.gitkeep
 *.log
 
+# Storage and backups
+storage/
+
 # Workspaces and client artifacts
 workspaces/clients/
 workspaces/tmp/
@@ -34,6 +37,10 @@ workspaces/tmp/
 .pytest_cache/
 .coverage
 htmlcov/
+coverage/
+
+# Node
+node_modules/
 
 # OS and Editor
 .DS_Store

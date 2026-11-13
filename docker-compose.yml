@@ -1,23 +1,499 @@
 version: "3.8"
 
+networks:
+  agency-network:
+    name: agency-network
+    driver: bridge
+
 services:
+  # =========================================================================
+  # 1. Barramento de Mensageria Distribuído (RabbitMQ)
+  # =========================================================================
   rabbitmq:
     image: rabbitmq:3-management-alpine
     container_name: agency-rabbitmq
     restart: unless-stopped
     ports:
       - "5672:5672"   # Protocolo AMQP
-      - "15672:15672" # Painel Web de Gerenciamento (Management UI)
+      - "15672:15672" # Painel Web de Gerenciamento
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-agency}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-agency123}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - agency-network
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_running"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  # =========================================================================
+  # 2. Armazenamento Vetorial & Busca Semântica (Qdrant)
+  # =========================================================================
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    container_name: agency-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333" # API REST e Web UI
+      - "6334:6334" # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - agency-network
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =========================================================================
+  # 3. Meta-Buscador Anônimo (SearXNG)
+  # =========================================================================
+  searxng:
+    image: searxng/searxng:latest
+    container_name: agency-searxng
+    restart: unless-stopped
+    ports:
+      - "8888:8080"
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+    volumes:
+      - ./config/searxng:/etc/searxng:ro
+    networks:
+      - agency-network
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8080'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =========================================================================
+  # 4. Banco de Dados Dedicado do SonarQube (PostgreSQL 15)
+  # =========================================================================
+  sonarqube-db:
+    image: postgres:15-alpine
+    container_name: agency-sonarqube-db
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${SONAR_DB_USER:-sonar}
+      POSTGRES_PASSWORD: ${SONAR_DB_PASSWORD:-sonar123}
+      POSTGRES_DB: ${SONAR_DB_NAME:-sonarqube}
+    volumes:
+      - sonarqube_db_data:/var/lib/postgresql/data
+    networks:
+      - agency-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SONAR_DB_USER:-sonar}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =========================================================================
+  # 5. Motor Central de Análise Estática & Quality Gates (SonarQube)
+  # =========================================================================
+  sonarqube:
+    image: sonarqube:community
+    container_name: agency-sonarqube
+    restart: unless-stopped
+    depends_on:
+      sonarqube-db:
+        condition: service_healthy
+    ports:
+      - "9000:9000"
+    environment:
+      SONAR_JDBC_USERNAME: ${SONAR_DB_USER:-sonar}
+      SONAR_JDBC_PASSWORD: ${SONAR_DB_PASSWORD:-sonar123}
+      SONAR_JDBC_URL: jdbc:postgresql://sonarqube-db:5432/${SONAR_DB_NAME:-sonarqube}
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+    networks:
+      - agency-network
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/9000'"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+
+  # =========================================================================
+  # 6. Agregação e Indexação de Logs (Grafana Loki)
+  # =========================================================================
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: agency-loki
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_data:/loki
+      - ./config/loki/local-config.yaml:/etc/loki/local-config.yaml:ro
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - agency-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =========================================================================
+  # 7. Coletor de Logs do Docker (Promtail)
+  # =========================================================================
+  promtail:
+    image: grafana/promtail:3.0.0
+    container_name: agency-promtail
+    restart: unless-stopped
+    depends_on:
+      loki:
+        condition: service_healthy
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config/promtail/promtail-config.yaml:/etc/promtail/config.yaml:ro
+    command: -config.file=/etc/promtail/config.yaml
+    networks:
+      - agency-network
+
+  # =========================================================================
+  # 8. Dashboard Visual de Observabilidade & Métricas (Grafana)
+  # =========================================================================
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: agency-grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin123}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - agency-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =========================================================================
+  # Camada 2: Gateways de Borda & Servidores MCP (11 Microsserviços)
+  # =========================================================================
+  whatsapp-gateway:
+    build:
+      context: .
+      dockerfile: services/whatsapp/Dockerfile
+    container_name: agency-whatsapp-gateway
+    restart: unless-stopped
+    ports:
+      - "3005:3005"
+    environment:
+      - PORT=3005
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-agency}:${RABBITMQ_PASS:-agency123}@rabbitmq:5672/
+      - AGENCY_SECRET_KEY=${AGENCY_SECRET_KEY:-dev-agency-secret-key-12345}
+    volumes:
+      - ./storage/whatsapp:/app/storage/whatsapp
+    networks:
+      - agency-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3005/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  payment-gateway:
+    build:
+      context: .
+      dockerfile: services/payment/Dockerfile
+    container_name: agency-payment-gateway
+    restart: unless-stopped
+    ports:
+      - "3006:3006"
+    environment:
+      - PAYMENT_PORT=3006
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-agency}:${RABBITMQ_PASS:-agency123}@rabbitmq:5672/
+      - AGENCY_SECRET_KEY=${AGENCY_SECRET_KEY:-dev-agency-secret-key-12345}
+    volumes:
+      - ./certs:/app/certs:ro
+    networks:
+      - agency-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3006/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  guardrail-gateway:
+    build:
+      context: .
+      dockerfile: services/guardrail/Dockerfile
+    container_name: agency-guardrail-gateway
+    restart: unless-stopped
+    ports:
+      - "3007:3007"
+    environment:
+      - GUARDRAIL_PORT=3007
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-agency}:${RABBITMQ_PASS:-agency123}@rabbitmq:5672/
+      - AGENCY_SECRET_KEY=${AGENCY_SECRET_KEY:-dev-agency-secret-key-12345}
+    networks:
+      - agency-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3007/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  telegram-gateway:
+    build:
+      context: .
+      dockerfile: services/telegram/Dockerfile
+    container_name: agency-telegram-gateway
+    restart: unless-stopped
+    ports:
+      - "3008:3008"
+    environment:
+      - TELEGRAM_PORT=3008
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-agency}:${RABBITMQ_PASS:-agency123}@rabbitmq:5672/
+      - AGENCY_SECRET_KEY=${AGENCY_SECRET_KEY:-dev-agency-secret-key-12345}
+    networks:
+      - agency-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3008/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  osint-scraper-gateway:
+    build:
+      context: .
+      dockerfile: services/scraper/Dockerfile
+    container_name: agency-osint-scraper-gateway
+    restart: unless-stopped
+    ports:
+      - "3009:3009"
+    environment:
+      - SCRAPER_PORT=3009
+      - SEARXNG_URL=http://searxng:8080
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-agency}:${RABBITMQ_PASS:-agency123}@rabbitmq:5672/
+      - AGENCY_SECRET_KEY=${AGENCY_SECRET_KEY:-dev-agency-secret-key-12345}
+    volumes:
+      - ./storage/cookies:/app/storage/cookies
+    networks:
+      - agency-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3009/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  workspace-sandbox-service:
+    build:
+      context: .
+      dockerfile: services/sandbox/Dockerfile
+    container_name: agency-workspace-sandbox-service
+    restart: unless-stopped
+    ports:
+      - "3010:3010"
+    environment:
+      - SANDBOX_PORT=3010
+      - AGENCY_SECRET_KEY=${AGENCY_SECRET_KEY:-dev-agency-secret-key-12345}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./workspaces:/workspaces
+    networks:
+      - agency-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3010/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  git-vcs-gateway:
+    build:
+      context: .
+      dockerfile: services/git/Dockerfile
+    container_name: agency-git-vcs-gateway
+    restart: unless-stopped
+    ports:
+      - "3011:3011"
+    environment:
+      - GIT_PORT=3011
+      - AGENCY_SECRET_KEY=${AGENCY_SECRET_KEY:-dev-agency-secret-key-12345}
+    volumes:
+      - ./workspaces:/workspaces
+    networks:
+      - agency-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3011/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  deploy-cloud-gateway:
+    build:
+      context: .
+      dockerfile: services/deploy/Dockerfile
+    container_name: agency-deploy-cloud-gateway
+    restart: unless-stopped
+    ports:
+      - "3012:3012"
+    environment:
+      - DEPLOY_PORT=3012
+      - AGENCY_SECRET_KEY=${AGENCY_SECRET_KEY:-dev-agency-secret-key-12345}
+    networks:
+      - agency-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3012/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  knowledge-memory-gateway:
+    build:
+      context: .
+      dockerfile: services/memory/Dockerfile
+    container_name: agency-knowledge-memory-gateway
+    restart: unless-stopped
+    ports:
+      - "3013:3013"
+    environment:
+      - MEMORY_PORT=3013
+      - QDRANT_URL=http://qdrant:6333
+      - AGENCY_SECRET_KEY=${AGENCY_SECRET_KEY:-dev-agency-secret-key-12345}
+    networks:
+      - agency-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3013/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  browser-gateway:
+    build:
+      context: .
+      dockerfile: services/browser/Dockerfile
+    container_name: agency-browser-gateway
+    restart: unless-stopped
+    ports:
+      - "3014:3014"
+    environment:
+      - BROWSER_PORT=3014
+      - AGENCY_SECRET_KEY=${AGENCY_SECRET_KEY:-dev-agency-secret-key-12345}
+    networks:
+      - agency-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3014/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  security-audit-gateway:
+    build:
+      context: .
+      dockerfile: services/security/Dockerfile
+    container_name: agency-security-audit-gateway
+    restart: unless-stopped
+    ports:
+      - "3015:3015"
+    environment:
+      - SECURITY_PORT=3015
+      - SONARQUBE_URL=http://sonarqube:9000
+      - AGENCY_SECRET_KEY=${AGENCY_SECRET_KEY:-dev-agency-secret-key-12345}
+    networks:
+      - agency-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      sonarqube:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3015/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # =========================================================================
+  # Camada 3: Orquestrador Core (engine-core)
+  # =========================================================================
+  engine-core:
+    build:
+      context: .
+      dockerfile: services/engine/Dockerfile
+    container_name: agency-engine-core
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ENGINE_PORT=8000
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-agency}:${RABBITMQ_PASS:-agency123}@rabbitmq:5672/
+      - AGENCY_SECRET_KEY=${AGENCY_SECRET_KEY:-dev-agency-secret-key-12345}
+    volumes:
+      - ./services/engine/pipeline.db:/app/pipeline.db
+    networks:
+      - agency-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      whatsapp-gateway:
+        condition: service_healthy
+      payment-gateway:
+        condition: service_healthy
+      guardrail-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8000/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
 volumes:
   rabbitmq_data:
+  qdrant_data:
+  sonarqube_db_data:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:
+  loki_data:
+  grafana_data:
