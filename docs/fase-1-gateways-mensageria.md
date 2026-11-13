@@ -928,7 +928,16 @@ O banco de dados central `pipeline.db` operado em modo WAL persiste os dados ope
 * `report_summary` (TEXT NOT NULL) — Resumo textual do resultado e débitos técnicos.
 * `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 
-### 14.8 Referência Cruzada às Tabelas do Motor Central (Fase 0)
+### 14.8 Tabela `telegram_approvals` (Rastreabilidade de Aprovações Humanas de João)
+* `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
+* `lead_id` (TEXT) — Identificador do lead associado (opcional, Foreign Key referenciando `leads.id`).
+* `decision_type` (TEXT NOT NULL) — Categoria da aprovação (ex: `DEPLOY_PRODUCTION`, `BUDGET_OVERRIDE`, `CALIBRATION_STEP`).
+* `details` (TEXT NOT NULL) — Contexto descritivo e dados enviados para análise de João.
+* `status` (TEXT NOT NULL DEFAULT 'PENDING') — Estado da solicitação (`PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`).
+* `requested_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+* `decided_at` (TIMESTAMP) — Data e hora exata em que João clicou no botão de aprovação/rejeição ou emitiu comando.
+
+### 14.9 Referência Cruzada às Tabelas do Motor Central (Fase 0)
 As seguintes tabelas de infraestrutura e governança persistem no mesmo arquivo `pipeline.db` e foram especificadas na Fase 0 (`docs/fase-0-motor-agentes.md` e `docs/fase-0-remediacao-hardening.md`):
 * **`agent_messages`**: Mensagens de loop de raciocínio, pensamentos, tool calls e tool results dos agentes.
 * **`audit_logs`**: Trilha de auditoria cronológica imutável de todas as ações e chamadas operacionais da esteira.
