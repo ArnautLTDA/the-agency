@@ -47,3 +47,15 @@ node_modules/
 Thumbs.db
 .vscode/
 .idea/
+
+# Agents
+.agents/
+
+# Certificates and Private Keys
+certs/**/*.key
+*.key
+*.pem
+*.p12
+*.pfx
+
+
