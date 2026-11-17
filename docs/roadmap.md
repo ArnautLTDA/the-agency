@@ -134,21 +134,15 @@ Criação e padronização de todos os sentidos, braços operacionais e ferramen
 
 ---
 
-## FASE 2: O Comitê Executivo (C-Suite Board de 4 Agentes)
+## FASE 2: O Comitê Executivo (C-Suite Board) — [STANDBY / POSTERGADA PARA V2]
 
-O cérebro estratégico da empresa, operando sob sua autoridade absoluta.
+> **Decisão Estratégica do Chefe João (2026-11-17):** O módulo C-Suite (deliberação multi-agente LangGraph entre CEO, CTO, CRO e COO) foi **desacoplado e postergado para uma versão futura (v2)**. A especificação técnica completa está preservada e congelada em `docs/fase-2-c-suite-governanca.md`.  
+> **Governança do MVP:** No MVP de produção, as aprovações e decisões estratégicas fluem **diretamente para João via Telegram Bot (`telegram-gateway` :3008)**, com tabela de precificação inicial simples em `config/pricing.yaml`, permitindo acelerar o time-to-market e focar imediatamente na tração comercial da Fase 3.
 
-* **2.1 Personas & Diretrizes dos 4 Diretores (Pydantic Schemas):**
-  * 👑 **CEO Agent:** Visão estratégica macro, foco em lucro líquido e sintetizador final de propostas.
-  * 💻 **CTO Agent:** Excelência em arquitetura, auditoria de código e austeridade radical no gasto de tokens.
-  * 📈 **CRO Agent:** Maximização de receita, precificação dinâmica e testes A/B de abordagem.
-  * ⚙️ **COO Agent:** Monitoramento de tempo de ciclo, detecção de gargalos e gestão da telemetria da calibragem.
-* **2.2 O Deliberation Engine (Grafos Cíclicos LangGraph):**
-  * Orquestração de debate Round-Robin: CRO propõe ➔ CTO desafia os custos ➔ COO analisa a viabilidade ➔ CEO sintetiza o parecer.
-* **2.3 Relatório de Proposta Padronizado:**
-  * Geração automática do relatório com a **Matriz Comparativa Tripla Obrigatória** (Buy vs Host vs Build).
-* **2.4 Cláusula Pétrea de Isolamento & Imutabilidade:**
-  * Bloqueio estrutural: o Conselho não pode modificar seus próprios prompts, parâmetros ou modelos.
+* **2.1 Personas & Diretrizes dos 4 Diretores (Pydantic Schemas):** (Preservado para v2)
+* **2.2 O Deliberation Engine (Grafos Cíclicos LangGraph):** (Preservado para v2)
+* **2.3 Relatório de Proposta Padronizado:** (Preservado para v2)
+* **2.4 Cláusula Pétrea de Isolamento & Imutabilidade:** (Preservado para v2)
 
 ---
 
