@@ -42,7 +42,7 @@ flowchart TD
 
 ## 2. Padrões Absorvidos e Aprimorados da Comunidade Open-Source
 
-Em vez de reinventar a roda, absorvemos e adaptamos diretamente para a realidade brasileira (PMEs, WhatsApp, linguagem colloquial profissional e PIX) as melhores práticas de 3 projetos de referência:
+Em vez de reinventar a roda, absorvemos e adaptamos diretamente para a realidade brasileira (PMEs, WhatsApp, linguagem coloquial profissional e PIX) as melhores práticas de 3 projetos de referência:
 
 1. **Do `msitarzewski/agency-agents`:**
    - **`landing-page-specialist` & `ui-ux-designer`:** Absorvemos as regras estritas de design anti-slop (Tailwind moderno, tipografia limpa, hierarquia visual sem poluição, foco em conversão mobile).
@@ -51,6 +51,45 @@ Em vez de reinventar a roda, absorvemos e adaptamos diretamente para a realidade
    - **Contratos de Artefatos Padronizados (SOP):** O `Demo Builder` não codifica livremente; ele opera sobre um manifesto tipado (`demo_manifest.json`) que mapeia os serviços e imagens reais minerados.
 3. **Do `SalesGPT`:**
    - **Máquina de Estados Finita de Negociação:** A conversa de WhatsApp é modelada em 5 fases estritas (Abertura $\rightarrow$ Apresentação da Isca $\rightarrow$ Diagnóstico de Dor $\rightarrow$ Ancoragem de Valor $\rightarrow$ Fechamento).
+
+---
+
+### 2.1 Diretrizes de Implementação para a Próxima IA (Playbooks e Configurações)
+
+> [!IMPORTANT]
+> **Instrução Mandatória para Agentes Implementadores:**  
+> A próxima IA que atuar nesta fase deve obrigatoriamente construir e validar os seguintes artefatos em `knowledge/sales/` e `services/engine/config/agents/pipeline/`, sem criar dependências de pacotes externos, ingerindo-os nativamente via CRAG no `knowledge-memory-gateway` (`:3013`):
+
+#### 1. Playbooks em `knowledge/sales/`:
+* **`knowledge/sales/cold-outreach-scripts.md`:**
+  - Biblioteca de ganchos de abertura categorizados por nicho (barbearias, oficinas, estética, clínicas).
+  - Regra pétrea: mensagem inicial com teto estrito de 25 a 30 palavras.
+  - Personalização obrigatória referenciando o nome comercial, bairro e um ponto forte real minerado nas avaliações do Google Maps.
+* **`knowledge/sales/whatsapp-objections.md`:**
+  - Matriz completa de quebra de objeções baseada nas técnicas de negociação de Chris Voss (rotulagem e espelhamento) e nos scripts do `objection-handler` do `agency-agents`:
+    - *Objeção 1 ("Já tenho Instagram/Redes Sociais"):* Demonstração de que rede social depende de algoritmo e dispersa o cliente, enquanto a vitrine com PIX converte o visitante em pagador instantaneamente.
+    - *Objeção 2 ("Está caro / Sem orçamento agora"):* Ancoragem de perda (comparar o custo de R$ 1.500 com o prejuízo de perder 2 a 3 clientes por semana no balcão).
+    - *Objeção 3 ("Meu sobrinho/amigo faz pra mim"):* Contraponto sobre entrega profissional com garantia de 90 dias, sem lock-in e hospedagem profissional com SLA ativo.
+    - *Objeção 4 ("Não tenho tempo para gerenciar"):* Demonstração de que o sistema é 100% autônomo, rodando no navegador e integrado ao WhatsApp do estabelecimento.
+* **`knowledge/sales/pricing-and-margins.md`:**
+  - Tabela canônica de precificação do MVP:
+    - Valor padrão de setup: **R$ 1.500,00** (50% de sinal = R$ 750,00 no início + 50% na homologação).
+    - Mensalidade padrão (MRR): **R$ 250,00/mês** (hospedagem, suporte e garantia).
+    - Limite máximo de desconto à vista autorizado para o Sales Executive: **10%** (R$ 1.350,00 no PIX único).
+    - Custos de tokens e margem líquida esperada $\ge 85\%$.
+* **`knowledge/sales/salesgpt-state-machine.md`:**
+  - Especificação detalhada da máquina de estados do diálogo:
+    - `HOOK`: Primeiro contato saudando e elogiando o estabelecimento.
+    - `DEMO_DELIVERY`: Envio do print da demo com link ativo na Vercel e pergunta engajadora.
+    - `SPIN_DISCOVERY`: Diagnóstico do gargalo de agendamento/vendas.
+    - `OBJECTION_HANDLING`: Contorno consultivo com recuperação de playbooks no Qdrant.
+    - `CLOSING_PIX`: Emissão de cobrança com chave Copia e Cola e QR Code Base64 do Banco Inter.
+
+#### 2. Configurações dos Agentes em `services/engine/config/agents/pipeline/`:
+* **`mining_agent.yaml`:** Perfil do minerador configurado com modelo `gemini/gemini-2.5-flash`, temperatura 0.1, ferramentas de OSINT (`scrape_google_maps`, `check_whatsapp_numbers`) e system prompt com regras anti-racismo e fidelidade ética.
+* **`demo_builder_agent.yaml`:** Perfil do construtor de demos com modelo `gemini/gemini-2.5-flash`, temperatura 0.2, ferramentas de workspace e deploy Vercel, e system prompt com diretrizes anti-slop do `agency-agents`.
+* **`sales_executive_agent.yaml`:** Perfil do vendedor comercial com modelo `gemini/gemini-2.5-flash`, temperatura 0.3, ferramentas de mensageria WhatsApp e cobrança PIX Banco Inter, com prompt de 5 fases e travas de 30 palavras.
+* **`optimization_agent.yaml`:** Perfil do analista de perdas com modelo `gemini/gemini-2.5-flash`, temperatura 0.2, focado em categorizar recusas e atualizar a base vetorial do Qdrant.
 
 ---
 

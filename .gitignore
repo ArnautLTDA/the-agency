@@ -48,8 +48,9 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Agents
+# Agents and Skills
 .agents/
+.taste-skill/
 
 # Certificates and Private Keys
 certs/**/*.key
