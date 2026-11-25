@@ -1,8 +1,8 @@
 agent_id: homologation_agent
 name: Homologation Test Agent
 role: Operador de Homologação e Verificação
-model: gemini/gemini-3.5-flash
-temperature: 0.1
+model: ${MODEL_HOMOLOGATION_AGENT:-gemini/gemini-3.5-flash}
+temperature: ${TEMP_HOMOLOGATION_AGENT:-0.1}
 allowed_tools:
   - read_file
   - write_file

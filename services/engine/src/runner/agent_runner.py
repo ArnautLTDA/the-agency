@@ -38,8 +38,20 @@ class AgentProfile(BaseModel):
     system_prompt: str
 
 
+def expand_env_vars(text: str) -> str:
+    """Expands ${VAR:-default} and ${VAR} patterns using os.environ."""
+    pattern = re.compile(r"\$\{([A-Za-z0-9_]+)(?::-([^}]*))?\}")
+
+    def replace(match: re.Match) -> str:
+        var_name = match.group(1)
+        default_val = match.group(2) if match.group(2) is not None else ""
+        return os.environ.get(var_name, default_val)
+
+    return pattern.sub(replace, text)
+
+
 def load_agent_profile(agent_id: str, config_dir: Path | None = None) -> AgentProfile:
-    """Loads and validates an agent YAML profile from council/ or pipeline/ directory (SEC-005)."""
+    """Loads and validates an agent YAML profile from pipeline/ directory (SEC-005)."""
     # SEC-005: Validate slug pattern to prevent directory traversal
     if not re.match(r"^[a-z0-9_\-]+$", agent_id):
         raise ValueError(
@@ -60,7 +72,6 @@ def load_agent_profile(agent_id: str, config_dir: Path | None = None) -> AgentPr
     resolved_config_root = config_path.resolve()
     search_files = [
         config_path / "pipeline" / f"{agent_id}.yaml",
-        config_path / "council" / f"{agent_id}.yaml",
         config_path / f"{agent_id}.yaml",
     ]
 
@@ -75,9 +86,35 @@ def load_agent_profile(agent_id: str, config_dir: Path | None = None) -> AgentPr
         raise ValueError(f"Access denied: Profile for '{agent_id}' escapes authorized config root.")
 
     try:
-        data = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
+        raw_text = yaml_file.read_text(encoding="utf-8")
+        expanded_text = expand_env_vars(raw_text)
+        data = yaml.safe_load(expanded_text)
         if not isinstance(data, dict):
             raise ValueError(f"Malformed YAML in agent profile '{agent_id}'.")
+
+        # Direct environment overrides (Highest priority for model/temperature)
+        env_model_variants = [
+            f"MODEL_{agent_id.upper()}",
+            f"AGENT_{agent_id.upper()}_MODEL",
+            f"MODEL_AGENT_{agent_id.upper()}",
+        ]
+        for env_key in env_model_variants:
+            if env_key in os.environ and os.environ[env_key].strip():
+                data["model"] = os.environ[env_key].strip()
+                break
+
+        env_temp_variants = [
+            f"TEMP_{agent_id.upper()}",
+            f"AGENT_{agent_id.upper()}_TEMPERATURE",
+        ]
+        for env_key in env_temp_variants:
+            if env_key in os.environ and os.environ[env_key].strip():
+                try:
+                    data["temperature"] = float(os.environ[env_key].strip())
+                    break
+                except ValueError:
+                    pass
+
         return AgentProfile(**data)
     except Exception as exc:
         logger.error(f"Failed to load agent profile '{agent_id}': {exc}")

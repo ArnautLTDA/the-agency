@@ -98,6 +98,115 @@ class Settings(BaseSettings):
         description="Currency exchange API URL for USD/BRL",
     )
 
+    # Dynamic Model Slots (Zero Hardcoded Models)
+    DEFAULT_FAST_MODEL: str = Field(
+        default="gemini/gemini-2.5-flash",
+        description="Default fast LLM model slot",
+    )
+    DEFAULT_REASONING_MODEL: str = Field(
+        default="gemini/gemini-3.8-pro",
+        description="Default reasoning LLM model slot",
+    )
+    MODEL_MINING_AGENT: str = Field(
+        default="gemini/gemini-2.5-flash",
+        description="Model slot for Mining Agent",
+    )
+    MODEL_DEMO_BUILDER_AGENT: str = Field(
+        default="gemini/gemini-2.5-flash",
+        description="Model slot for Demo Builder Agent",
+    )
+    MODEL_SALES_EXECUTIVE_AGENT: str = Field(
+        default="gemini/gemini-2.5-flash",
+        description="Model slot for Sales Executive Agent",
+    )
+    MODEL_OPTIMIZATION_AGENT: str = Field(
+        default="gemini/gemini-2.5-flash",
+        description="Model slot for Optimization Agent",
+    )
+    MODEL_HOMOLOGATION_AGENT: str = Field(
+        default="gemini/gemini-3.5-flash",
+        description="Model slot for Homologation Agent",
+    )
+    MODEL_GUARDRAIL_AGENT: str = Field(
+        default="groq/llama-guard-3-8b",
+        description="Model slot for Guardrail Agent",
+    )
+
+    # Commercial Pricing & Margins Parameters
+    PRICING_SETUP_BASE_BRL: float = Field(
+        default=1500.00,
+        gt=0,
+        description="Base setup fee in BRL",
+    )
+    PRICING_SIGNAL_PERCENT: float = Field(
+        default=0.50,
+        gt=0,
+        le=1.0,
+        description="Signal percentage required before factory starts",
+    )
+    PRICING_DELIVERY_PERCENT: float = Field(
+        default=0.50,
+        gt=0,
+        le=1.0,
+        description="Delivery percentage balance",
+    )
+    PRICING_MRR_BASE_BRL: float = Field(
+        default=250.00,
+        ge=0,
+        description="Monthly recurring revenue base in BRL",
+    )
+    PRICING_MAX_DISCOUNT_PERCENT: float = Field(
+        default=0.10,
+        ge=0,
+        le=0.5,
+        description="Max cash discount percentage authorized for sales agent",
+    )
+
+    # Operational & Anti-Ban Limits
+    LIMIT_DAILY_OUTREACH_PER_CHIP: int = Field(
+        default=25,
+        gt=0,
+        description="Max outbound leads initiated per WhatsApp chip per day",
+    )
+    LIMIT_BUSINESS_HOURS_START: str = Field(
+        default="08:30",
+        description="Start of commercial window",
+    )
+    LIMIT_BUSINESS_HOURS_END: str = Field(
+        default="18:30",
+        description="End of commercial window",
+    )
+    LIMIT_JITTER_MIN_SECONDS: int = Field(
+        default=15,
+        ge=0,
+        description="Min jitter seconds between distinct conversations",
+    )
+    LIMIT_JITTER_MAX_SECONDS: int = Field(
+        default=45,
+        ge=0,
+        description="Max jitter seconds between distinct conversations",
+    )
+    LIMIT_COMPOSING_MIN_SECONDS: int = Field(
+        default=3,
+        ge=0,
+        description="Min composing/typing simulation seconds",
+    )
+    LIMIT_COMPOSING_MAX_SECONDS: int = Field(
+        default=7,
+        ge=0,
+        description="Max composing/typing simulation seconds",
+    )
+    LIMIT_MAX_TURNS_PER_CONVERSATION: int = Field(
+        default=5,
+        gt=0,
+        description="Max conversation turns in sales dialogue",
+    )
+    LIMIT_MAX_TOKEN_BUDGET_PER_LEAD_BRL: float = Field(
+        default=1.00,
+        gt=0,
+        description="Max token spend ceiling per lead in BRL",
+    )
+
     @field_validator("GEMINI_API_KEY")
     @classmethod
     def validate_gemini_key(cls, value: str) -> str:

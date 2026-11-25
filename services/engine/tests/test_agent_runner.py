@@ -22,6 +22,15 @@ def test_tc009_load_valid_agent_profile():
     assert "patch_file" in profile.allowed_tools
 
 
+def test_tc009_b_dynamic_model_and_limit_override(monkeypatch):
+    """Verifies that agent models and temperatures can be dynamically overridden via environment variables without hardcoding."""
+    monkeypatch.setenv("MODEL_HOMOLOGATION_AGENT", "groq/llama-3.3-70b-versatile")
+    monkeypatch.setenv("TEMP_HOMOLOGATION_AGENT", "0.7")
+    profile = load_agent_profile("homologation_agent")
+    assert profile.model == "groq/llama-3.3-70b-versatile"
+    assert profile.temperature == 0.7
+
+
 def test_tc010_load_invalid_agent_profile():
     """TC-010: Attempting to load missing or malformed agent profile raises FileNotFoundError or ValueError."""
     with pytest.raises((FileNotFoundError, ValueError)):
