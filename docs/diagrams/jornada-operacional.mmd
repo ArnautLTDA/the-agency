@@ -1,0 +1,56 @@
+flowchart TD
+    subgraph ETAPA1["🎯 1. Mineração de Leads & OSINT"]
+        direction LR
+        L1["Google Maps Scraper (:3009)<br/>Extrai fotos, endereço e avaliações 1-3 estrelas"] --> L2["Validação Silenciosa WhatsApp (:3005)<br/>Verifica conta ativa no Baileys"]
+    end
+
+    subgraph ETAPA2["🛠️ 2. Prototipação Expressa (Bespoke Demo)"]
+        direction LR
+        D1["Demo Builder Agent (:3010)<br/>Gera protótipo com marca e catálogo real"] --> D2["Deploy Preview Vercel (:3012)<br/>Publica URL pública instantânea"]
+        D2 --> D3["Auditoria Pré-Voo Playwright (:3014)<br/>Valida HTTP 200, sem 404 + Screenshot 375x812"]
+    end
+
+    subgraph ETAPA3["🛡️ 3. Portão de Aprovação Soberana de João"]
+        direction LR
+        G1{"Telegram Bot (:3008)<br/>Card com Screenshot + Link da Demo"}
+        G1 -- "[Aprovar]" --> S1["Disparo Autorizado"]
+        G1 -- "[Ajustar]" --> D1
+        G1 -- "[Descartar]" --> G_DESC["Lead Descartado"]
+    end
+
+    subgraph ETAPA4["💬 4. Abordagem Consultiva & Fechamento WhatsApp"]
+        direction LR
+        S1 --> S2["Sales Executive (:3005)<br/>Humanizer (delays 3-8s, 30ms/char)<br/>SPIN Selling & Chris Voss FSM"]
+        S2 <--> S_GUARD["Ingress Guardrail (:3007)<br/>Groq Llama Guard 3 (<150ms)<br/>Groq Whisper áudio PTT (<500ms)"]
+        S2 -- "Interesse" --> S3["Emissão PIX Sinal 50% (:3006)<br/>QR Code Dinâmico Banco Inter mTLS"]
+        S2 -- "Objeção/Perda" --> S_OPT["Optimization Agent (:3013)<br/>Grava aprendizado no Qdrant"]
+    end
+
+    subgraph ETAPA5["⚙️ 5. Fábrica de Software & Blindagem (Back-of-the-House)"]
+        direction TB
+        F_LOCK{"Trava Financeira Primária<br/>Sinal 50% Confirmado no Banco Inter?"}
+        F_PO["PO Agent<br/>Estrutura PRD.md & User Stories BDD"]
+        F_ARCH["Architect Agent<br/>Git Repo (:3011) + ARCHITECTURE.md + Schemas Zod"]
+        F_DEV["Dev Team Agents (Database, Backend, Frontend)<br/>Clean Architecture em Docker Sandbox (:3010)"]
+        F_QA["QA Agent (:3014 Playwright/Vitest)<br/>Testes E2E e Unitários (Meta: 80%+ cobertura)"]
+        F_SEC["Security Agent (:3015)<br/>5 Motores: SonarQube, Gitleaks, Semgrep, Trivy, Nuclei"]
+        F_HEAL["Autonomous Self-Healing Loop<br/>Emite improvement_request estruturado"]
+
+        F_LOCK -- "Sim" --> F_PO --> F_ARCH --> F_DEV --> F_QA
+        F_QA -- "Falhas" --> F_HEAL --> F_DEV
+        F_QA -- "100% Verde & >= 80%" --> F_SEC
+        F_SEC -- "Falhas / CVEs" --> F_HEAL
+    end
+
+    subgraph ETAPA6["🚀 6. Homologação, Liquidação Final & Handover"]
+        direction LR
+        H1["Homologação Guiada com Cliente<br/>Link Staging no WhatsApp (:3005)"] --> H2["Liquidação Final PIX 50% (:3006)<br/>Banco Inter mTLS"]
+        H2 --> H3["Deploy Produção Vercel (:3012)<br/>Domínio próprio SSL + Git Handoff (:3011)"]
+        H3 --> H4["Sustaining Engineering Agent<br/>Garantia 90 dias + Retenção MRR"]
+    end
+
+    ETAPA1 ==> ETAPA2
+    ETAPA2 ==> ETAPA3
+    ETAPA3 ==> ETAPA4
+    S3 ==> F_LOCK
+    F_SEC -->|"Quality Gate PASSED"| ETAPA6

@@ -1,0 +1,165 @@
+flowchart TB
+    %% =========================================================================
+    %% CAMADA DE ENTRADA & LIFECYCLE (FASTAPI ENTRYPOINT)
+    %% =========================================================================
+    subgraph LIFECYCLE["🚀 LIFECYCLE & STARTUP SEQUENCE (main.py)"]
+        direction TB
+        BOOT["Início: uvicorn main:create_app (:8000)"]
+        
+        subgraph BOOT_STEPS["Sequência Lifespan Assíncrona"]
+            L1["1. init_db() + create_db_and_tables()<br/>Ativa SQLite WAL Mode (pipeline.db)"]
+            L2["2. Alembic Auto-Upgrade (SEC-019)<br/>Aplica migrações até 'head'"]
+            L3["3. run_crash_recovery() (SEC-020)<br/>Resgata tarefas órfãs ➔ INTERRUPTED_BY_CRASH"]
+            L4["4. CurrencyService prefetch()<br/>Cache taxa USD/BRL (AwesomeAPI/BACEN)"]
+            L5["5. QueueService.connect()<br/>RabbitMQ AMQP: agency.tasks (prefetch=5)"]
+            L6["6. SupervisorService + mMCP Discovery<br/>Healthcheck 5s gateways + tools/list"]
+            L1 --> L2 --> L3 --> L4 --> L5 --> L6
+        end
+        
+        BOOT --> L1
+    end
+
+    %% =========================================================================
+    %% CAMADA DE API, ROTAS & SEGURANÇA
+    %% =========================================================================
+    subgraph API_LAYER["🌐 CAMADA DE API REST & STREAMING (src/api/)"]
+        direction TB
+        
+        REQ_IN["Requisição HTTP Entrada"]
+        
+        MW_ID["RequestIDMiddleware<br/>Gera / propaga X-Request-ID"]
+        MW_CORS["CORSMiddleware<br/>Origens permitidas (localhost:3000, 5173)"]
+        AUTH_DEP["Security(get_api_key)<br/>Valida header X-Engine-Key"]
+        
+        subgraph ENDPOINTS["Endpoints FastAPI (router.py)"]
+            EP_HEALTH["GET /health<br/>Status, métricas pool, USD/BRL"]
+            EP_RUN["POST /api/v1/agent/run<br/>Recebe {agent_id, task, workspace_dir}<br/>Retorna 202 Accepted + run_id"]
+            EP_GET_RUN["GET /api/v1/agent/run/{id}<br/>Consulta status, iterações e telemetria"]
+            EP_SSE["GET /api/v1/events/stream/{id}<br/>Server-Sent Events (SSE Stream)"]
+        end
+
+        REQ_IN --> MW_ID --> MW_CORS --> AUTH_DEP --> ENDPOINTS
+    end
+
+    %% =========================================================================
+    %% CONCORRÊNCIA, FILAS & SUPERVISÃO
+    %% =========================================================================
+    subgraph QUEUE_POOL["⚡ GERENCIADOR DE CONCORRÊNCIA & SUPERVISÃO (src/services/)"]
+        direction TB
+
+        AMQP_SVC["QueueService (queue.py)<br/>• aio-pika robust connection<br/>• Fila durável: agency.tasks<br/>• Exchange: agency.topic<br/>• Dead-letter: agency.dlx<br/>• Freeze/Unfreeze prospecção"]
+        
+        WORKER_POOL["AgentPool (pool.py)<br/>• asyncio.Semaphore(MAX_CONCURRENT=3 a 5)<br/>• Fila de espera ordenada (_queued_count)<br/>• Rastreio ativo: _active_tasks[run_id]<br/>• Graceful shutdown com cancelamento"]
+        
+        SUPERVISOR["SupervisorService (supervisor.py)<br/>• Polling a cada 5s dos gateways vitais<br/>• WhatsApp (:3005), Payment (:3006), Guardrail (:3007)<br/>• Circuito: OPERACIONAL vs PAUSA_EMERGENCIAL<br/>• Auto-retomada em 3 sucessos consecutivos"]
+
+        AMQP_SVC <--> WORKER_POOL
+        SUPERVISOR -->|"Comanda Freeze/Pause"| AMQP_SVC
+    end
+
+    %% =========================================================================
+    %% O NÚCLEO DO AGENT RUNNER (REACT LOOP)
+    %% =========================================================================
+    subgraph RUNNER_CORE["🧠 O RUNTIME DO AGENTE — REACT LOOP (src/runner/agent_runner.py)"]
+        direction TB
+
+        LOAD_PROFILE["load_agent_profile(agent_id)<br/>• Valida regex slug ^[a-z0-9_-]+$ (SEC-005)<br/>• Lê YAML de services/engine/config/agents/<br/>• Expande variáveis ${ENV_VAR:-default}<br/>• Overrides: MODEL_<AGENT> / TEMP_<AGENT>"]
+
+        INIT_RUN["Inicializa AgentRun no SQLite<br/>Status: RUNNING | Inicia Iteração 1"]
+
+        subgraph REACT_ITERATION["Loop Iterativo ReAct (Iteração 1 até max_iterations = 25)"]
+            direction TB
+
+            PRUNE["1. prune_context_window() (SEC-012)<br/>Se > 32k tokens: preserva System Prompt + início + últimas 2 msgs"]
+
+            CALL_LLM["2. LiteLLM acompletion()<br/>• Roteia: Gemini 2.5 Flash / Groq LPU<br/>• Retries automáticos para 429/503 (backoff 3s, 6s)<br/>• Schema Function Calling gerado via get_tool_definitions()"]
+
+            EXTRACT_METRICS["3. Extração Telemetria de Tokens (TC-038/039)<br/>• Extrai prompt_tokens, completion_tokens e cached_tokens reais<br/>• calculate_token_costs() ➔ converte para USD e BRL via Taxa Atual<br/>• Grava TokenMetric no SQLite e emite SSE token_usage"]
+
+            EVAL_DECISION{"4. Avalia Resposta do Modelo"}
+
+            THOUGHT_LOG["Registra THOUGHT no AuditLog<br/>Emite SSE: event='thought'"]
+
+            TOOL_DISPATCH["5. Identifica tool_calls<br/>• Parse arguments JSON<br/>• Registra TOOL_CALL no AuditLog<br/>• Emite SSE: event='tool_call'"]
+
+            EXEC_TOOL["6. execute_tool() (src/tools/registry.py)<br/>Despacha execução da ferramenta selecionada"]
+
+            TOOL_RESULT_LOG["Registra TOOL_RESULT no AuditLog<br/>Emite SSE: event='tool_result'<br/>Injeta resultado no histórico messages"]
+
+            CIRCUIT_CHK{"7. Circuit Breaker<br/>3 falhas idênticas consecutivas?"}
+
+            CIRCUIT_BREAK["Interrompe Run com PAUSED_CIRCUIT_BREAKER<br/>Registra incidente de segurança"]
+
+            FINAL_RESP["8. Resposta Final Atingida (Sem mais tool_calls)<br/>• Grava AgentRun (status=COMPLETED)<br/>• Emite SSE: event='final_response'"]
+        end
+
+        LOAD_PROFILE --> INIT_RUN --> PRUNE
+        PRUNE --> CALL_LLM --> EXTRACT_METRICS --> EVAL_DECISION
+        EVAL_DECISION -- "Possui Pensamento" --> THOUGHT_LOG --> TOOL_DISPATCH
+        EVAL_DECISION -- "Sem Tool Calls (Conclusão)" --> FINAL_RESP
+        TOOL_DISPATCH --> EXEC_TOOL --> TOOL_RESULT_LOG --> CIRCUIT_CHK
+        CIRCUIT_CHK -- "Não (Normal)" --> PRUNE
+        CIRCUIT_CHK -- "Sim (Loop Detectado)" --> CIRCUIT_BREAK
+    end
+
+    %% =========================================================================
+    %% CAMADA DE FERRAMENTAS & CLIENTE MCP
+    %% =========================================================================
+    subgraph TOOLS_LAYER["🛠️ CAMADA DE FERRAMENTAS & MCP CLIENT HOST (src/tools/)"]
+        direction TB
+
+        TOOL_REG["Tool Registry (registry.py)<br/>• TOOL_SCHEMAS compatíveis com OpenAI/Gemini<br/>• Mapeia nomes de ferramentas ➔ despachadores"]
+
+        subgraph NATIVE_TOOLS["Ferramentas Nativas Locais (implementations.py)"]
+            T_READ["read_file(path)"]
+            T_WRITE["write_file(path, content)"]
+            T_PATCH["patch_file(path, search, replace)"]
+            T_LIST["list_directory(path)"]
+            T_MSG["send_agent_message(to, type, payload)"]
+        end
+
+        subgraph DOCKER_SANDBOX["Sandbox Execution Driver (sandbox.py)"]
+            DOCKER_CMD["run_terminal_command(command, timeout=30)<br/>• Isolamento Docker efêmero via DooD (/var/run/docker.sock)<br/>• Imagem: node:20-slim (sem privilégios root)<br/>• Limite de buffer de saída: 128 KB<br/>• Confinamento de workspace (SEC-001)"]
+        end
+
+        subgraph MCP_HOST["MCP Client Host (mcp_client.py & mcp_discovery.py)"]
+            MCP_DISCO["MCPDiscoveryService<br/>Varre periodicamente :3005 a :3015 via tools/list"]
+            MCP_CLI["MCPClientHost (SSE ClientSession)<br/>• Conexão HTTP/SSE com autenticação X-Agency-Key<br/>• list_tools() & call_tool(name, args)"]
+        end
+
+        TOOL_REG --> NATIVE_TOOLS
+        TOOL_REG --> DOCKER_SANDBOX
+        TOOL_REG --> MCP_HOST
+    end
+
+    %% =========================================================================
+    %% BANCO DE DADOS LOCAL & PERSISTÊNCIA
+    %% =========================================================================
+    subgraph STORAGE_LAYER["💾 BANCO DE DADOS & PERSISTÊNCIA (pipeline.db)"]
+        direction TB
+
+        DB_ENGINE["Async Engine SQLAlchemy / aiosqlite (database.py)<br/>PRAGMA journal_mode = WAL<br/>PRAGMA synchronous = NORMAL<br/>PRAGMA busy_timeout = 30000"]
+
+        subgraph ENTITIES["Tabelas SQLModel (entities.py)"]
+            T_RUNS["agent_runs<br/>run_id, agent_id, task, status, tokens, custos USD/BRL"]
+            T_MSGS["agent_messages<br/>id, from_agent, to_agent, message_type, payload, status"]
+            T_LOGS["audit_logs<br/>id, run_id, action_type (THOUGHT, TOOL_CALL, RESULT), content"]
+            T_METRICS["token_metrics<br/>id, timestamp, model, prompt, completion, cached, cost"]
+        end
+
+        MAINT_SVC["MaintenanceService (maintenance.py)<br/>• Retenção de 30 dias (RETENTION_DAYS)<br/>• PRAGMA auto_vacuum = INCREMENTAL<br/>• Expurga logs antigos sem lock de escrita"]
+
+        DB_ENGINE --> ENTITIES
+        MAINT_SVC --> DB_ENGINE
+    end
+
+    %% =========================================================================
+    %% CONEXÕES ESTRUTURAIS ENTRE AS CAMADAS DO CORE
+    %% =========================================================================
+    EP_RUN -->|"Submete corrotina run()"| WORKER_POOL
+    WORKER_POOL -->|"Aloca semáforo e executa"| RUNNER_CORE
+    EXEC_TOOL <==>|"Invoca"| TOOL_REG
+    RUNNER_CORE <==>|"Grava estado, logs e métricas"| DB_ENGINE
+    API_LAYER <==>|"Lê dados de runs e logs"| DB_ENGINE
+    EP_SSE <..-|"Streaming push de eventos"| RUNNER_CORE
+    MCP_CLI ==>|"JSON-RPC 2.0 SSE"| EXT_MCP["11 Servidores MCP Periféricos (:3005 a :3015)"]

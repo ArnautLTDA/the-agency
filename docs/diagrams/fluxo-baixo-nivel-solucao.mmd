@@ -1,0 +1,197 @@
+flowchart TD
+    %% =========================================================================
+    %% ESTILO E CONFIGURAÇÃO GERAL
+    %% =========================================================================
+    
+    %% =========================================================================
+    %% ETAPA 1: MINERAÇÃO, OSINT & VALIDAÇÃO
+    %% =========================================================================
+    subgraph S1["📍 ETAPA 1: Mineração OSINT & Validação de WhatsApp"]
+        direction TB
+        T1_TRIG["Disparo: Cron / CLI agy-admin / Fila RabbitMQ<br/><code>amqp: agency.tasks (routing: tasks.mining)</code>"]
+        
+        T1_RUNNER["engine-core (:8000) ➔ AgentRunner<br/>• Carrega perfil <code>mining_agent.yaml</code><br/>• Inicia ReAct Loop (max 25 iter)"]
+        
+        T1_MCP_OSINT["MCP tools/call ➔ <code>osint-scraper-gateway (:3009)</code><br/><code>scrape_google_maps(query, localidade, max_leads)</code><br/><i>Transporte: JSON-RPC 2.0 via HTTP/SSE</i>"]
+        
+        T1_SCRAPER["osint-scraper (:3009)<br/>• CDP no Chrome headless<br/>• Extrai fotos, notas e dores em reviews 1-3 estrelas<br/>• Parser Trafilatura para Markdown limpo"]
+        
+        T1_MCP_WPP["MCP tools/call ➔ <code>whatsapp-gateway (:3005)</code><br/><code>check_whatsapp_numbers([phone_number])</code>"]
+        
+        T1_BAILEYS["whatsapp-gateway (:3005)<br/>• Baileys WebSocket: <code>onWhatsApp(jid)</code><br/>• Retorna: exists=True/False"]
+        
+        T1_SAVE["engine-core (:8000)<br/>• INSERT em <code>pipeline.db</code> (leads: status='QUALIFIED')<br/>• Publica no RabbitMQ: <code>sales.lead.qualified</code>"]
+        
+        T1_TRIG --> T1_RUNNER
+        T1_RUNNER -->|"1.1 tools/call"| T1_MCP_OSINT
+        T1_MCP_OSINT --> T1_SCRAPER
+        T1_SCRAPER -->|"1.2 Retorna Ficha JSON"| T1_RUNNER
+        T1_RUNNER -->|"1.3 tools/call"| T1_MCP_WPP
+        T1_MCP_WPP --> T1_BAILEYS
+        T1_BAILEYS -->|"1.4 Retorna Status WPP"| T1_RUNNER
+        T1_RUNNER --> T1_SAVE
+    end
+
+    %% =========================================================================
+    %% ETAPA 2: PROTOTIPAÇÃO BESPOKE & PRE-FLIGHT
+    %% =========================================================================
+    subgraph S2["🛠️ ETAPA 2: Prototipação Bespoke & Auditoria Pré-Voo"]
+        direction TB
+        T2_TRIG["Consome RabbitMQ: <code>sales.lead.qualified</code>"]
+        
+        T2_RUNNER["engine-core (:8000) ➔ AgentRunner<br/>• Carrega perfil <code>demo_builder_agent.yaml</code><br/>• Lê manifesto <code>demo_manifest.json</code>"]
+        
+        T2_MCP_FS["MCP tools/call ➔ <code>workspace-sandbox (:3010)</code><br/><code>write_file(path, code)</code> & <code>run_terminal_command('npm run build')</code><br/><i>Executa isolado em container Docker efêmero node:20-slim via DooD</i>"]
+        
+        T2_MCP_DEP["MCP tools/call ➔ <code>deploy-cloud-gateway (:3012)</code><br/><code>deploy_preview_demo(workspace_path)</code><br/><i>Chama Vercel REST API POST /v13/deployments</i>"]
+        
+        T2_VERCEL["Vercel Cloud<br/>Retorna URL de preview pública ativa"]
+        
+        T2_MCP_BROWSER["MCP tools/call ➔ <code>browser-gateway (:3014)</code><br/><code>browser_screenshot(url, viewport={width:375, height:812})</code><br/><code>browser_inspect_console(url)</code>"]
+        
+        T2_PLAYWRIGHT["browser-gateway (:3014)<br/>• Playwright Chromium headless<br/>• Pre-flight: HTTP 200, zero erros 404/console<br/>• Gera captura mobile PNG 375x812"]
+        
+        T2_SAVE["engine-core (:8000)<br/>• Atualiza SQLite: demo_url, screenshot_path, status='DEMO_READY'<br/>• Publica no RabbitMQ: <code>sales.demo.ready</code>"]
+        
+        T2_TRIG --> T2_RUNNER
+        T2_RUNNER -->|"2.1 Scaffold & Build"| T2_MCP_FS
+        T2_MCP_FS -->|"2.2 Build Verde"| T2_RUNNER
+        T2_RUNNER -->|"2.3 Deploy Preview"| T2_MCP_DEP
+        T2_MCP_DEP --> T2_VERCEL
+        T2_VERCEL -->|"2.4 Preview URL"| T2_RUNNER
+        T2_RUNNER -->|"2.5 Auditoria Pré-Voo"| T2_MCP_BROWSER
+        T2_MCP_BROWSER --> T2_PLAYWRIGHT
+        T2_PLAYWRIGHT -->|"2.6 Screenshot & Check OK"| T2_RUNNER
+        T2_RUNNER --> T2_SAVE
+    end
+
+    %% =========================================================================
+    %% ETAPA 3: APROVAÇÃO HUMANA & ABORDAGEM WHATSAPP
+    %% =========================================================================
+    subgraph S3["💬 ETAPA 3: Portão Telegram & Abordagem com Ingress Guardrail"]
+        direction TB
+        T3_TRIG["Consome RabbitMQ: <code>sales.demo.ready</code>"]
+        
+        T3_TG_CALL["engine-core (:8000) ➔ MCP tools/call<br/><code>telegram-gateway (:3008)</code> ➔ <code>send_telegram_alert</code><br/>Envia card com screenshot, link da demo e botões inline"]
+        
+        T3_JOAO{"João no Telegram Celular<br/>[✅ Aprovar Envio] [✏️ Ajustar] [❌ Descartar]"}
+        
+        T3_SALES_START["engine-core (:8000) ➔ AgentRunner<br/>• Carrega perfil <code>sales_executive_agent.yaml</code><br/>• FSM: Estado HOOK / DEMO_DELIVERY"]
+        
+        T3_MCP_WPP["MCP tools/call ➔ <code>whatsapp-gateway (:3005)</code><br/><code>send_whatsapp_message(to, text, media)</code><br/><i>Módulo Humanizer: delay 3-8s, digitação 30ms/char</i>"]
+        
+        T3_LEAD_REPLY["Lead PME Responde no WhatsApp<br/>(Mensagem de Texto ou Áudio .ogg PTT)"]
+        
+        T3_GUARD["guardrail-gateway (:3007)<br/>• Se áudio: Groq Whisper transcreve em < 500ms<br/>• Ingress Inspection: Groq Llama Guard 3 em < 150ms<br/>• Anti-Jailbreak & Anti-Prompt Injection"]
+        
+        T3_SAFE_FWD["engine-core (:8000) ➔ Sales Executive<br/>• Recebe texto seguro e limpo<br/>• Conduz SPIN Selling / Negociação Chris Voss<br/>• Acordo fechado ➔ Avança para CLOSING_PIX"]
+        
+        T3_TRIG --> T3_TG_CALL
+        T3_TG_CALL --> T3_JOAO
+        T3_JOAO -- "[Aprovar]" --> T3_SALES_START
+        T3_SALES_START -->|"3.1 Dispara Abordagem"| T3_MCP_WPP
+        T3_MCP_WPP --> T3_LEAD_REPLY
+        T3_LEAD_REPLY -->|"3.2 Ingress Webhook"| T3_GUARD
+        T3_GUARD -->|"3.3 Payload Inspecionado e Seguro"| T3_SAFE_FWD
+    end
+
+    %% =========================================================================
+    %% ETAPA 4: FECHAMENTO FINANCEIRO COM PIX mTLS
+    %% =========================================================================
+    subgraph S4["💳 ETAPA 4: Fechamento Financeiro & PIX Banco Inter mTLS"]
+        direction TB
+        T4_START["engine-core (:8000) ➔ Sales Executive FSM: CLOSING_PIX"]
+        
+        T4_MCP_PAY["MCP tools/call ➔ <code>payment-gateway (:3006)</code><br/><code>create_pix_charge(lead_id, valor, vencimento)</code>"]
+        
+        T4_INTER["payment-gateway (:3006)<br/>• Comunicação mTLS com Banco Inter BACEN (certs .crt/.key)<br/>• POST /pix/v2/cob (API Banking v2)<br/>• Taxa R$ 0,00 por transação"]
+        
+        T4_PIX_DATA["Gera PIX Dinâmico com txid único:<br/>• QR Code em Base64<br/>• Chave Copia e Cola"]
+        
+        T4_SEND_PIX["whatsapp-gateway (:3005)<br/>Envia cobrança formatada e QR Code para o Lead"]
+        
+        T4_PAID["Lead PME realiza pagamento no seu App Bancário"]
+        
+        T4_WEBHOOK["Banco Inter ➔ POST Webhook mTLS (:3006)<br/>• Idempotência por txid<br/>• Confirma liquidação do sinal de 50%"]
+        
+        T4_NOTIF["payment-gateway (:3006)<br/>• Publica no RabbitMQ: <code>finance.pix.signal_confirmed</code><br/>• Envia alerta no Telegram de João (:3008)"]
+        
+        T4_START --> T4_MCP_PAY
+        T4_MCP_PAY --> T4_INTER
+        T4_INTER --> T4_PIX_DATA
+        T4_PIX_DATA --> T4_SEND_PIX
+        T4_SEND_PIX --> T4_PAID
+        T4_PAID --> T4_WEBHOOK
+        T4_WEBHOOK --> T4_NOTIF
+    end
+
+    %% =========================================================================
+    %% ETAPA 5: FÁBRICA DE SOFTWARE & SELF-HEALING
+    %% =========================================================================
+    subgraph S5["⚙️ ETAPA 5: Fábrica de Software, Sandbox Docker & Self-Healing"]
+        direction TB
+        T5_GATE{"TRAVA FINANCEIRA PRIMÁRIA<br/>Sinal de 50% Confirmado no Banco Inter?"}
+        
+        T5_PO["PO Agent (engine-core)<br/>• Converte escopo em <code>PRD.md</code><br/>• Define User Stories e Critérios BDD"]
+        
+        T5_ARCH["Architect Agent (engine-core)<br/>• MCP <code>git-vcs-gateway (:3011)</code> ➔ <code>git_init_repository</code><br/>• Cria <code>workspaces/clients/slug/</code><br/>• Desenha <code>ARCHITECTURE.md</code>, Schemas Zod e Drizzle ORM<br/>• MCP <code>deploy-cloud (:3012)</code> ➔ <code>provision_database</code> (Supabase Postgres)"]
+        
+        T5_DEV["Dev Team Agents (Database, Backend, Frontend)<br/>• MCP <code>workspace-sandbox (:3010)</code> ➔ <code>write_file</code> / <code>patch_file</code><br/>• Programa Next.js 15 App Router + Tailwind<br/>• Executa builds dentro de container Docker descartável (DooD)"]
+        
+        T5_QA["QA Agent (engine-core)<br/>• MCP <code>browser-gateway (:3014)</code> ➔ <code>browser_run_e2e_tests</code><br/>• Playwright roda suítes E2E e unitárias<br/>• Gate Mandatório: Cobertura >= 80% e zero testes instáveis"]
+        
+        T5_SEC["Security Agent (engine-core)<br/>• MCP <code>security-audit-gateway (:3015)</code><br/>• 5 Motores simultâneos: SonarQube (:9000), Gitleaks, Semgrep SAST, Trivy SCA, Nuclei DAST"]
+        
+        T5_HEAL["Autonomous Self-Healing Loop<br/>• Se QA ou Security reprovam ➔ emite evento <code>improvement_request</code> estruturado<br/>• Dev Team corrige pontualmente ➔ re-executa testes automaticamente"]
+        
+        T5_GATE -- "Sim (Liberado)" --> T5_PO
+        T5_PO --> T5_ARCH
+        T5_ARCH --> T5_DEV
+        T5_DEV --> T5_QA
+        T5_QA -- "Falhas nos Testes" --> T5_HEAL
+        T5_HEAL --> T5_DEV
+        T5_QA -- "100% Verde (>=80%)" --> T5_SEC
+        T5_SEC -- "Vulnerabilidades / Code Smells" --> T5_HEAL
+    end
+
+    %% =========================================================================
+    %% ETAPA 6: HOMOLOGAÇÃO, LIQUIDAÇÃO FINAL & HANDOVER
+    %% =========================================================================
+    subgraph S6["🚀 ETAPA 6: Homologação Guiada, Saldo Final & Handover"]
+        direction TB
+        T6_READY["Quality Gate PASSED & Segurança 100% Limpa"]
+        
+        T6_STAGING["MCP tools/call ➔ <code>deploy-cloud-gateway (:3012)</code><br/>Publica Staging oficial na Vercel com banco Supabase"]
+        
+        T6_HOMOLOG["PO Agent via WhatsApp (:3005)<br/>Envia URL de staging para o cliente com roteiro de testes guiado"]
+        
+        T6_APPRV["Cliente testa e valida no WhatsApp: 'Aprovado!'"]
+        
+        T6_PIX_FINAL["payment-gateway (:3006)<br/>Emite cobrança PIX dos 50% restantes via mTLS Banco Inter"]
+        
+        T6_PAID_FINAL["Webhook Banco Inter confirma quitação total (100%)"]
+        
+        T6_PROD["deploy-cloud-gateway (:3012)<br/>Deploy definitivo de Produção com domínio próprio e SSL ativo"]
+        
+        T6_GIT_HAND["git-vcs-gateway (:3011)<br/>Handoff do repositório Git limpo e sem lock-in para o GitHub do cliente"]
+        
+        T6_SUSTAIN["Sustaining Engineering Agent (engine-core)<br/>• Ativa garantia incondicional de 90 dias contra bugs<br/>• Monitora uptime e faz upsell do plano de manutenção mensal (MRR R$ 97-297)"]
+        
+        T6_READY --> T6_STAGING
+        T6_STAGING --> T6_HOMOLOG
+        T6_HOMOLOG --> T6_APPRV
+        T6_APPRV --> T6_PIX_FINAL
+        T6_PIX_FINAL --> T6_PAID_FINAL
+        T6_PAID_FINAL --> T6_PROD
+        T6_PROD --> T6_GIT_HAND
+        T6_GIT_HAND --> T6_SUSTAIN
+    end
+
+    %% =========================================================================
+    %% CONEXÃO MACRO ENTRE AS ETAPAS
+    %% =========================================================================
+    T1_SAVE ==>|"RabbitMQ: sales.lead.qualified"| T2_TRIG
+    T2_SAVE ==>|"RabbitMQ: sales.demo.ready"| T3_TRIG
+    T3_SAFE_FWD ==>|"Fechamento Negociado"| T4_START
+    T4_NOTIF ==>|"RabbitMQ: finance.pix.signal_confirmed"| T5_GATE
+    T5_SEC ==>|"Quality Gate Aprovado"| T6_READY

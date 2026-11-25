@@ -1,0 +1,37 @@
+flowchart TD
+    %% =========================================================================
+    %% REACT LOOP SIMPLES & DIDÁTICO (TEMPLATE BASE)
+    %% =========================================================================
+
+    START(["🏁 1. ENTRADA: Tarefa ou Instrução"]) --> CTX["2. CONTEXTO<br/>System Prompt + Histórico + Tools Disponíveis"]
+
+    subgraph REACT["🔄 O CICLO CENTRAL: ReAct (Thought ➔ Action ➔ Observation)"]
+        direction TB
+
+        THOUGHT["💭 3. THOUGHT (Pensamento / Raciocínio)<br/>O LLM analisa o estado atual e decide:<br/><i>'O que preciso fazer para resolver isso?'</i>"]
+
+        DECISION{"4. Precisa chamar<br/>uma ferramenta?"}
+
+        ACTION["⚡ 5. ACTION (Ação / Invocação)<br/>O LLM emite a chamada:<br/><code>tool_name(argumentos)</code>"]
+
+        OBSERVATION["👁️ 6. OBSERVATION (Observação / Retorno)<br/>A ferramenta executa no mundo real<br/>(Arquivo, Banco, API, Sandbox)<br/>e devolve o resultado"]
+
+        THOUGHT --> DECISION
+        DECISION -- "Sim (Precisa de dados/ação)" --> ACTION
+        ACTION --> OBSERVATION
+        OBSERVATION -->|"Injeta resultado de volta no contexto"| THOUGHT
+    end
+
+    CTX --> THOUGHT
+
+    DECISION -- "Não (Problema resolvido)" --> FINAL_ANSWER["🎯 7. RESPOSTA FINAL<br/>Entrega o resultado conclusivo ao usuário"]
+
+    subgraph SAFEGUARDS["🛡️ TRAVAS DE SEGURANÇA"]
+        direction LR
+        MAX_ITER["Teto Máximo de Iterações<br/>(ex: max_iterations = 25)"]
+        CIRCUIT["Circuit Breaker<br/>(Falhas idênticas repetidas)"]
+        MAX_ITER --- CIRCUIT
+    end
+
+    THOUGHT -.->|"Se estourar o limite"| SAFEGUARDS
+    SAFEGUARDS -.->|"Parada forçada com erro limpo"| FINAL_ANSWER

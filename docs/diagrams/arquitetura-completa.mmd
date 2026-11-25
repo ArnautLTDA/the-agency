@@ -1,0 +1,123 @@
+flowchart TB
+    %% =========================================================================
+    %% LIDERANÇA & CONTROLE HUMANO
+    %% =========================================================================
+    subgraph CMD["👑 LIDERANÇA SOBERANA (Human-in-the-Loop)"]
+        direction LR
+        JOAO["João (Founder & Decisor Supremo)<br/>'A Palavra do Chefe é Sempre Lei'"]
+        TG_APP["Telegram do Chefe (:3008)<br/>Aprovações Rápidas & Alertas"]
+        COCKPIT["Cockpit Web (:3000)<br/>Next.js 15 + Tailwind | Kanban & Copilot"]
+        JOAO <==> TG_APP
+        JOAO <==> COCKPIT
+    end
+
+    %% =========================================================================
+    %% O HARNESS CENTRAL (ENGINE-CORE - FASE 0)
+    %% =========================================================================
+    subgraph HARNESS["⚡ ENGINE-CORE (:8000) — O HARNESS / RUNTIME UNIVERSAL DE TODOS OS AGENTES"]
+        direction TB
+
+        subgraph RUNTIME_CORE["Núcleo de Execução do Harness (Python 3.12 / FastAPI)"]
+            RUNNER["AgentRunner (Ciclo ReAct Determinístico, max 25 iter, Circuit Breaker)"]
+            ROUTER["LiteLLM Router (Gemini 2.5 Flash / Groq LPU + Fallback Seguro)"]
+            TELEMETRY["Telemetria Financeira ao Centavo (Tokens USD/BRL em tempo real)"]
+            POOL["Worker Pool Assíncrono (Semáforo 3-5 agentes + Crash Recovery)"]
+            MCP_HOST["MCP Client Host (Descoberta tools/list e despacho tools/call via SSE)"]
+            DB_LOCAL[("SQLite WAL Mode (pipeline.db)<br/>State Store, Mensageria & Audit Logs")]
+            
+            RUNNER <--> ROUTER
+            RUNNER <--> TELEMETRY
+            RUNNER <--> POOL
+            RUNNER <--> MCP_HOST
+            RUNNER <--> DB_LOCAL
+        end
+
+        subgraph AGENTS_SQUADS["Personas & Squads Cognitivos (Executados 100% DENTRO do AgentRunner)"]
+            direction LR
+
+            subgraph SQUAD_CSUITE["C-Suite Board (Fase 2 / v2)"]
+                direction TB
+                CEO["👑 CEO Agent (Estratégia & Lucro Real)"]
+                CTO["💻 CTO Agent (Arquitetura & Matriz Tripla)"]
+                CRO["📈 CRO Agent (Receita & Precificação)"]
+                COO["⚙️ COO Agent (Gargalos & Tempo Ciclo)"]
+            end
+
+            subgraph SQUAD_FOH["Front-of-the-House (Fase 3 - Vendas)"]
+                direction TB
+                MINE["⛏️ Mining Agent (OSINT Maps)"]
+                DEMO["🎨 Demo Builder (Bespoke Next.js)"]
+                SALES["💬 Sales Executive (SPIN / Voss FSM)"]
+                OPTIM["📊 Optimization Agent (CRAG Learning)"]
+            end
+
+            subgraph SQUAD_BOH["Back-of-the-House (Fase 4 - Engenharia)"]
+                direction TB
+                PO["📋 PO Agent (PRD & User Stories)"]
+                ARCH["🏛️ Architect (Clean Arch & Zod)"]
+                DEV["💻 Dev Team (Database, Backend, UI)"]
+                QA["🧪 QA Agent (Playwright 80%+ cov)"]
+                SEC["🛡️ Security Agent (5 Scanners)"]
+                SUST["🔧 Sustaining Agent (Garantia 90d)"]
+            end
+        end
+
+        AGENTS_SQUADS <==>|"Instanciados e Controlados por"| RUNNER
+    end
+
+    %% =========================================================================
+    %% SUÍTE DE 11 FERRAMENTAS / SERVIDORES MCP (A CAIXA 100% FECHADA)
+    %% =========================================================================
+    subgraph MCP_PERIPHERALS["🛠️ SUÍTE DE 11 SERVIDORES MCP (Ferramentas Periféricas de I/O)"]
+        direction TB
+        
+        subgraph MCP_COMMS["Comunicação & Mensageria"]
+            MCP_WPP[":3005 whatsapp-gateway<br/>Baileys + Humanizer (delays, typing)"]
+            MCP_PAY[":3006 payment-gateway<br/>mTLS Banco Inter | PIX Dinâmico R$ 0"]
+            MCP_GUARD[":3007 guardrail-gateway<br/>Groq Llama Guard 3 & Whisper"]
+            MCP_TG[":3008 telegram-gateway<br/>Bot Bidirecional de Aprovações"]
+        end
+
+        subgraph MCP_EXEC["Execução, Arquivos & Deploy"]
+            MCP_SANDBOX[":3010 workspace-sandbox-service<br/>FileSystem & Docker Efêmero DooD"]
+            MCP_GIT[":3011 git-vcs-gateway<br/>Git Local & GitHub API REST v3"]
+            MCP_DEPLOY[":3012 deploy-cloud-gateway<br/>Vercel Previews/Prod & Supabase DB"]
+            MCP_BROWSER[":3014 browser-gateway<br/>Playwright Headless Viewport 375x812"]
+        end
+
+        subgraph MCP_INTEL["Inteligência, Memória & Auditoria"]
+            MCP_OSINT[":3009 osint-scraper-gateway<br/>Maps CDP + ruyijs + Trafilatura"]
+            MCP_MEM[":3013 knowledge-memory-gateway<br/>FastEmbed BGE-M3 + CRAG Qdrant"]
+            MCP_SEC[":3015 security-audit-gateway<br/>SonarQube, Gitleaks, Semgrep, Trivy, Nuclei"]
+        end
+    end
+
+    %% =========================================================================
+    %% INFRAESTRUTURA COMPARTILHADA (DOCKER COMPOSE)
+    %% =========================================================================
+    subgraph INFRA["📦 INFRAESTRUTURA DE APOIO & OBSERVABILIDADE (Docker Compose)"]
+        direction LR
+        RABBITMQ["RabbitMQ Broker (:5672)<br/>agency.tasks, sales.*, dev.*"]
+        QDRANT[("Qdrant Vector DB (:6333)<br/>Memória Multi-tenant")]
+        SEARXNG["SearXNG (:8888)<br/>Meta-busca 70+ provedores"]
+        SONAR["SonarQube (:9000)<br/>Postgres (:5432)"]
+        OBS["Grafana (:3001) + Loki (:3100)<br/>Promtail Logs Unificados"]
+    end
+
+    %% =========================================================================
+    %% FLUXOS E INTERLIGAÇÕES SISTÊMICAS
+    %% =========================================================================
+    TG_APP <.-> MCP_TG
+    COCKPIT <.-> HARNESS
+
+    MCP_HOST <==>|"Protocolo Oficial MCP (JSON-RPC 2.0 SSE)"| MCP_PERIPHERALS
+    POOL <==>|"Consumo & Publicação AMQP"| RABBITMQ
+
+    MCP_WPP <--> RABBITMQ
+    MCP_PAY <--> RABBITMQ
+    MCP_GUARD <--> RABBITMQ
+    MCP_TG <--> RABBITMQ
+
+    MCP_MEM <--> QDRANT
+    MCP_OSINT <--> SEARXNG
+    MCP_SEC <--> SONAR
